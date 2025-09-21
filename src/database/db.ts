@@ -1,4 +1,4 @@
-// src/database/db.ts - Prisma Client Implementation
+// src/database/db.ts - Prisma Client Implementation (FIXED)
 import { PrismaClient } from '@prisma/client';
 
 // Initialize Prisma Client
@@ -29,7 +29,7 @@ export const closeDatabase = async () => {
 
 export const getDatabaseStats = async () => {
   const [users, jobs, applications, resumes, hrContacts] = await Promise.all([
-    prisma.user.count(),
+    prisma.user.count(),           // Using PascalCase model names
     prisma.jobListing.count(),
     prisma.jobApplication.count(),
     prisma.resume.count(),
@@ -47,6 +47,16 @@ export const getDatabaseStats = async () => {
 
 // Database Models using Prisma
 export class UserModel {
+  static async updateGoogleTokens(email: string, googleToken: string, googleRefreshToken?: string | null) {
+    return await prisma.user.update({
+      where: { email },
+      data: {
+        googleToken,
+        googleRefreshToken: googleRefreshToken || null
+      }
+    });
+  }
+  
   static async create(userData: {
     id?: string;
     linkedinId?: string;
@@ -423,7 +433,6 @@ export class EmailDraftModel {
   }
 }
 
-// New automation models
 export class AutomationLogModel {
   static async create(logData: {
     userId: string;

@@ -1,4 +1,4 @@
-// src/services/JobService.ts - Updated with complete integration
+// src/services/JobService.ts - Fixed with proper user ID handling
 import { Socket } from "socket.io";
 import {
   UserSession,
@@ -60,11 +60,17 @@ export class JobService {
         return;
       }
 
-      // 2. Get user's resume text
-      const originalResume = await this.resumeService.getUserResumeText(user.id);
+      // 2. Get the actual database user (FIX FOR ID MISMATCH)
+      const dbUser = await this.getActualDatabaseUser(user);
+      if (!dbUser) {
+        throw new Error(`User not found in database: ${user.email}`);
+      }
+
+      // 3. Get user's resume text using database user ID
+      const originalResume = await this.resumeService.getUserResumeText(dbUser.id);
       console.log('DEBUG: Using resume text of length:', originalResume.length);
 
-      // 3. Initialize Google Drive service if user has token
+      // 4. Initialize Google Drive service if user has token
       let driveService: GoogleDriveService | null = null;
       if (user.googleToken) {
         try {
@@ -76,7 +82,7 @@ export class JobService {
         }
       }
 
-      // 4. Process each job
+      // 5. Process each job
       const applications: CustomizedApplication[] = [];
 
       for (let i = 0; i < Math.min(jobs.length, 5); i++) {
@@ -89,7 +95,7 @@ export class JobService {
             progress: Math.round(((i + 1) / Math.min(jobs.length, 5)) * 100),
           });
 
-          const result = await this.processIndividualJob(user, job, originalResume, driveService);
+          const result = await this.processIndividualJob(dbUser, job, originalResume, driveService);
           applications.push(result.application);
 
           io.emit("job_processed", {
@@ -149,6 +155,12 @@ export class JobService {
     try {
       await this.linkedinService.initialize();
       
+      // Get the actual database user
+      const dbUser = await this.getActualDatabaseUser(user);
+      if (!dbUser) {
+        throw new Error(`User not found in database: ${user.email}`);
+      }
+      
       // Search for jobs
       const jobs = await this.linkedinService.searchJobs(
         criteria.keywords,
@@ -157,23 +169,23 @@ export class JobService {
       );
       
       results.found = jobs.length;
-      console.log(`📋 Found ${jobs.length} jobs for automation`);
+      console.log(`Found ${jobs.length} jobs for automation`);
       
       if (jobs.length === 0) {
         return results;
       }
 
-      // Get user's resume
-      const originalResume = await this.resumeService.getUserResumeText(user.id);
+      // Get user's resume using database user ID
+      const originalResume = await this.resumeService.getUserResumeText(dbUser.id);
       
       // Initialize Google Drive service
       let driveService: GoogleDriveService | null = null;
       if (user.googleToken) {
         try {
           driveService = new GoogleDriveService(user.googleToken, user.googleRefreshToken);
-          console.log('✅ Google Drive service initialized for automation');
+          console.log('Google Drive service initialized for automation');
         } catch (error) {
-          console.log('⚠️ Google Drive initialization failed, continuing without Drive');
+          console.log('Google Drive initialization failed, continuing without Drive');
         }
       }
       
@@ -181,14 +193,14 @@ export class JobService {
       const newJobs = jobs.filter(job => !excludeUrls.has(job.url));
       results.skipped = jobs.length - newJobs.length;
       
-      console.log(`🔄 Processing ${newJobs.length} new jobs (${results.skipped} duplicates skipped)`);
+      console.log(`Processing ${newJobs.length} new jobs (${results.skipped} duplicates skipped)`);
       
       // Process only new jobs (limit to 5 per day to avoid spam)
       const jobsToProcess = newJobs.slice(0, 5);
       
       for (const job of jobsToProcess) {
         try {
-          const result = await this.processIndividualJob(user, job, originalResume, driveService);
+          const result = await this.processIndividualJob(dbUser, job, originalResume, driveService);
           
           // Send individual Telegram notification
           await this.telegramService.sendJobApplicationNotification(
@@ -202,14 +214,14 @@ export class JobService {
           );
           
           results.applied++;
-          console.log(`✅ Applied to ${job.title} at ${job.company} (Score: ${result.matchScore}%)`);
+          console.log(`Applied to ${job.title} at ${job.company} (Score: ${result.matchScore}%)`);
           
           // Add delay between applications to be respectful
           await this.sleep(3000);
           
         } catch (error: unknown) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.error(`❌ Failed to process job ${job.title} at ${job.company}:`, errorMessage);
+          console.error(`Failed to process job ${job.title} at ${job.company}:`, errorMessage);
           results.errors++;
         }
       }
@@ -218,194 +230,219 @@ export class JobService {
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('❌ Automated job processing failed:', errorMessage);
+      console.error('Automated job processing failed:', errorMessage);
       results.errors++;
     }
     
     return results;
   }
 
-  // Core job processing logic (used by both interactive and automated flows)
-  private async processIndividualJob(
-    user: UserSession, 
-    job: any, 
-    originalResume: string, 
-    driveService: GoogleDriveService | null
-  ): Promise<{
-    application: CustomizedApplication;
-    matchScore: number;
-    resumeCustomized: boolean;
-    hrContactsCount: number;
-    driveLink: string | null;
-  }> {
+  // Helper method to get actual database user (FIXES ID MISMATCH)
+  private async getActualDatabaseUser(user: UserSession): Promise<any> {
+    // First try to find by session ID
+    let dbUser = await UserModel.findById(user.id);
     
-    // Save job to database
-    const savedJob = await JobListingModel.create({
-      id: job.id,
-      title: job.title,
-      company: job.company,
-      location: job.location,
-      description: job.description,
-      url: job.url,
-      posted_date: this.safeParseDate(job.postedDate),
-    });
-
-    // Get detailed job description
-    let jobDescription = job.description;
-    if (!jobDescription && job.url) {
-      try {
-        jobDescription = await this.linkedinService.getJobDescription(job.url);
-      } catch (error) {
-        console.log('DEBUG: Failed to get job description from URL, using basic description');
-        jobDescription = job.description || 'No job description available';
+    if (!dbUser) {
+      console.log('User not found by session ID, trying email...');
+      // Fallback to email lookup
+      dbUser = await UserModel.findByEmail(user.email);
+      
+      if (dbUser) {
+        console.log('Found user by email - ID mismatch detected!');
+        console.log('Session ID:', user.id);
+        console.log('Database ID:', dbUser.id);
       }
     }
+    
+    return dbUser;
+  }
 
-    // Extract HR contacts
-    let hrContacts: any[] = [];
+  // Core job processing logic (FIXED with proper user ID)
+  // FIXED: Core job processing logic with proper user ID handling
+private async processIndividualJob(
+  dbUser: any, // Database user object with correct ID (ALREADY FIXED IN YOUR CODE)
+  job: any, 
+  originalResume: string, 
+  driveService: GoogleDriveService | null
+): Promise<{
+  application: CustomizedApplication;
+  matchScore: number;
+  resumeCustomized: boolean;
+  hrContactsCount: number;
+  driveLink: string | null;
+}> {
+  
+  // Save job to database
+  const savedJob = await JobListingModel.create({
+    id: job.id,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    description: job.description,
+    url: job.url ?? undefined,
+    postedDate: this.safeParseDate(job.postedDate),
+  });
+
+  // Get detailed job description
+  let jobDescription = job.description;
+  if (!jobDescription && job.url) {
     try {
-      const currentPage = this.linkedinService.getCurrentPage();
-      if (currentPage) {
-        hrContacts = await this.hrExtractor.extractHRContactsFromJobPage(
-          currentPage,
-          job.url,
-          job.company
-        );
-      }
+      jobDescription = await this.linkedinService.getJobDescription(job.url);
     } catch (error) {
-      console.log('DEBUG: Failed to extract HR contacts, continuing without them');
+      console.log('DEBUG: Failed to get job description from URL, using basic description');
+      jobDescription = job.description || 'No job description available';
     }
+  }
 
-    // Save HR contacts to database
-    for (const contact of hrContacts) {
-      try {
-        await HRContactModel.create({
-          job_id: savedJob.id,
-          name: contact.name,
-          email: contact.email,
-          linkedin_profile: contact.linkedin_profile,
-          title: contact.title,
-          company: contact.company,
-          phone: contact.phone,
-        });
-      } catch (error) {
-        console.log('DEBUG: Failed to save HR contact, skipping');
-      }
+  // Extract HR contacts
+  let hrContacts: any[] = [];
+  try {
+    const currentPage = this.linkedinService.getCurrentPage();
+    if (currentPage) {
+      hrContacts = await this.hrExtractor.extractHRContactsFromJobPage(
+        currentPage,
+        job.url,
+        job.company
+      );
     }
+  } catch (error) {
+    console.log('DEBUG: Failed to extract HR contacts, continuing without them');
+  }
 
-    // Customize resume with AI (with fallback)
-    let customizedResume = originalResume;
-    let matchScore = 75; // Default match score
-    let resumeCustomized = false;
-    let analysisResult = {
-      matchScore: 75,
-      missingSkills: [],
-      recommendations: []
-    };
-
+  // Save HR contacts to database
+  for (const contact of hrContacts) {
     try {
-      console.log('DEBUG: Attempting AI resume customization...');
-      customizedResume = await this.geminiService.customizeResume(
+      await HRContactModel.create({
+        jobId: savedJob.id,
+        name: contact.name,
+        email: contact.email,
+        linkedinProfile: contact.linkedin_profile,
+        title: contact.title,
+        company: contact.company,
+        phone: contact.phone,
+      });
+    } catch (error) {
+      console.log('DEBUG: Failed to save HR contact, skipping');
+    }
+  }
+
+  // Customize resume with AI (with fallback)
+  let customizedResume = originalResume;
+  let matchScore = 75; // Default match score
+  let resumeCustomized = false;
+  let analysisResult: {
+    matchScore: number;
+    missingSkills: string[];
+    recommendations: string[];
+  } = {
+    matchScore: 75,
+    missingSkills: [],
+    recommendations: []
+  };
+
+  try {
+    console.log('DEBUG: Attempting AI resume customization...');
+    customizedResume = await this.geminiService.customizeResume(
+      originalResume,
+      jobDescription,
+      job.title,
+      job.company
+    );
+    resumeCustomized = true;
+    console.log('DEBUG: AI resume customization successful');
+
+    // Try to analyze job match
+    try {
+      analysisResult = await this.geminiService.analyzeJobMatch(
         originalResume,
-        jobDescription,
+        jobDescription
+      );
+      matchScore = analysisResult.matchScore;
+      console.log('DEBUG: Job match analysis successful, score:', matchScore);
+    } catch (analysisError) {
+      console.log('DEBUG: Job match analysis failed, using default score');
+    }
+
+  } catch (customizationError: unknown) {
+    const errorMessage = customizationError instanceof Error ? customizationError.message : String(customizationError);
+    console.log('DEBUG: AI resume customization failed:', errorMessage);
+    
+    if (errorMessage.includes('quota') || errorMessage.includes('429')) {
+      console.log('DEBUG: Quota exceeded, using original resume');
+    } else {
+      console.log('DEBUG: Other AI error, using original resume');
+    }
+    // Continue with original resume
+  }
+
+  // ✅ FIXED: Save customized resume to database with correct user ID
+  const savedResume = await ResumeModel.create({
+    userId: dbUser.id,                 // ✅ Use actual database user ID (NOT session user ID)
+    jobId: savedJob.id!,
+    originalContent: originalResume,
+    customizedContent: customizedResume,
+    formatType: "professional",
+    customizationSuccessful: resumeCustomized
+  });
+
+  // Save to Google Drive
+  let driveLink: string | null = null;
+  if (driveService) {
+    try {
+      const fileName = GoogleDriveService.generateResumeFileName(
+        job.title, 
+        job.company, 
+        resumeCustomized
+      );
+      
+      driveLink = await driveService.saveResume(
+        customizedResume,
+        fileName,
         job.title,
         job.company
       );
-      resumeCustomized = true;
-      console.log('DEBUG: AI resume customization successful');
-
-      // Try to analyze job match
-      try {
-        analysisResult = await this.geminiService.analyzeJobMatch(
-          originalResume,
-          jobDescription
-        );
-        matchScore = analysisResult.matchScore;
-        console.log('DEBUG: Job match analysis successful, score:', matchScore);
-      } catch (analysisError) {
-        console.log('DEBUG: Job match analysis failed, using default score');
-      }
-
-    } catch (customizationError: unknown) {
-      const errorMessage = customizationError instanceof Error ? customizationError.message : String(customizationError);
-      console.log('DEBUG: AI resume customization failed:', errorMessage);
       
-      if (errorMessage.includes('quota') || errorMessage.includes('429')) {
-        console.log('DEBUG: Quota exceeded, using original resume');
-      } else {
-        console.log('DEBUG: Other AI error, using original resume');
+      if (driveLink) {
+        console.log(`Resume saved to Google Drive: ${fileName}`);
       }
-      // Continue with original resume
+    } catch (driveError) {
+      console.log('Failed to save to Google Drive, continuing without it');
     }
-
-    // Save customized resume to database
-    const savedResume = await ResumeModel.create({
-      user_id: user.id,
-      job_id: savedJob.id!,
-      original_content: originalResume,
-      customized_content: customizedResume,
-      format_type: "professional",
-      customization_successful: resumeCustomized
-    });
-
-    // Save to Google Drive
-    let driveLink: string | null = null;
-    if (driveService) {
-      try {
-        const fileName = GoogleDriveService.generateResumeFileName(
-          job.title, 
-          job.company, 
-          resumeCustomized
-        );
-        
-        driveLink = await driveService.saveResume(
-          customizedResume,
-          fileName,
-          job.title,
-          job.company
-        );
-        
-        if (driveLink) {
-          console.log(`💾 Resume saved to Google Drive: ${fileName}`);
-        }
-      } catch (driveError) {
-        console.log('⚠️ Failed to save to Google Drive, continuing without it');
-      }
-    }
-
-    // Save job application to database
-    const savedApplication = await JobApplicationModel.create({
-      user_id: user.id,
-      job_id: savedJob.id!,
-      job_url: job.url,
-      status: "applied",
-      match_score: matchScore,
-      notes: `HR contacts found: ${hrContacts.length}. Resume ${resumeCustomized ? 'customized with AI' : 'used as original'}. ${driveLink ? 'Saved to Drive.' : ''}`,
-      resume_customized: resumeCustomized,
-      drive_link: driveLink
-    });
-
-    const application: CustomizedApplication = {
-      id: savedApplication.id,
-      jobId: job.id,
-      originalResume,
-      customizedResume,
-      company: job.company,
-      title: job.title,
-      status: "applied",
-      match_score: matchScore,
-      hr_contacts_found: hrContacts.length,
-      email_drafted: hrContacts.length > 0,
-    };
-
-    return {
-      application,
-      matchScore,
-      resumeCustomized,
-      hrContactsCount: hrContacts.length,
-      driveLink
-    };
   }
+
+  // ✅ FIXED: Save job application to database with correct user ID
+  const savedApplication = await JobApplicationModel.create({
+    userId: dbUser.id,                // ✅ Use actual database user ID (NOT session user ID)
+    jobId: savedJob.id!,
+    jobUrl: job.url ?? undefined,
+    status: "applied",
+    matchScore: matchScore,
+    notes: `HR contacts found: ${hrContacts.length}. Resume ${resumeCustomized ? 'customized with AI' : 'used as original'}. ${driveLink ? 'Saved to Drive.' : ''}`,
+    resumeCustomized: resumeCustomized,
+    driveLink: driveLink ?? undefined
+  });
+
+  const application: CustomizedApplication = {
+    id: savedApplication.id,
+    jobId: job.id,
+    originalResume,
+    customizedResume,
+    company: job.company,
+    title: job.title,
+    status: "applied",
+    match_score: matchScore,
+    hr_contacts_found: hrContacts.length,
+    email_drafted: hrContacts.length > 0,
+  };
+
+  return {
+    application,
+    matchScore,
+    resumeCustomized,
+    hrContactsCount: hrContacts.length,
+    driveLink
+  };
+}
 
   // Verification methods
   async verifyJobApplication(jobUrl: string): Promise<{applied: boolean, method: string}> {
@@ -458,20 +495,20 @@ export class JobService {
       let scoreCount = 0;
 
       for (const app of applications) {
-        const appDate = new Date(app.applied_at);
+        const appDate = new Date(app.appliedAt);
         
         if (appDate > weekAgo) stats.thisWeek++;
         if (appDate > monthAgo) stats.thisMonth++;
         
-        if (app.resume_customized) stats.customizedResumes++;
+        if (app.resumeCustomized) stats.customizedResumes++;
         
-        if (app.match_score) {
-          totalScore += app.match_score;
+        if (app.matchScore) {
+          totalScore += app.matchScore;
           scoreCount++;
         }
 
-        // Count company applications
-        const company = app.company || 'Unknown';
+        // Count company applications - need to get from jobListing relation
+        const company = app.jobListing?.company || 'Unknown';
         stats.topCompanies.set(company, (stats.topCompanies.get(company) || 0) + 1);
       }
 

@@ -106,33 +106,55 @@ export const setupPassportStrategies = () => {
   }));
 
   // Google OAuth Strategy (unchanged)
-  passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID!,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    callbackURL: "/api/auth/google/callback",
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/documents.readonly']
-  }, async (accessToken, refreshToken, profile, done) => {
+  // Google OAuth Strategy (FIXED VERSION)
+passport.use(new GoogleStrategy({
+  clientID: process.env.GOOGLE_CLIENT_ID!,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+  callbackURL: "/api/auth/google/callback",
+  scope: [
+    'profile', 
+    'email', 
+    'https://www.googleapis.com/auth/documents.readonly',
+    'https://www.googleapis.com/auth/drive.file'  // Add Drive scope!
+  ]
+}, async (accessToken, refreshToken, profile, done) => {
+  try {
+    console.log('Google OAuth - accessToken exists:', !!accessToken);
+    console.log('Google OAuth - refreshToken exists:', !!refreshToken);
+    console.log('Google OAuth - profile:', profile.displayName, profile.emails?.[0]?.value);
+    
+    const user = createUserSession(profile, accessToken, 'google');
+    
+    // Save to database WITH TOKENS
     try {
-      const user = createUserSession(profile, accessToken, 'google');
+      await UserModel.create({
+        id: user.id,
+        googleId: profile.id,
+        name: user.name,
+        email: user.email,
+        profileData: profile,
+        googleToken: accessToken,           // SAVE THE TOKEN!
+        googleRefreshToken: refreshToken    // SAVE THE REFRESH TOKEN!
+      });
       
-      // Save to database
+      console.log('Google user saved with tokens:', user.name);
+    } catch (dbError) {
+      console.log('Google database save skipped (user may already exist)');
+      
+      // If user exists, UPDATE with new tokens
       try {
-        await UserModel.create({
-          id: user.id,
-          googleId: profile.id,
-          name: user.name,
-          email: user.email,
-          profileData: profile
-        });
-      } catch (dbError) {
-        console.log('Google database save skipped (user may already exist)');
+        await UserModel.updateGoogleTokens(user.email, accessToken, refreshToken);
+        console.log('Google tokens updated for existing user');
+      } catch (updateError) {
+        console.error('Failed to update Google tokens:', updateError);
       }
-      
-      console.log('Google user authenticated:', user.name);
-      return done(null, user);
-    } catch (error) {
-      console.error('Google auth error:', error);
-      return done(error, false);
     }
-  }));
+    
+    console.log('Google user authenticated:', user.name);
+    return done(null, user);
+  } catch (error) {
+    console.error('Google auth error:', error);
+    return done(error, false);
+  }
+}));
 };

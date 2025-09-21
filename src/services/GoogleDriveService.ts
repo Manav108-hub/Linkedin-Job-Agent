@@ -1,4 +1,4 @@
-// src/services/GoogleDriveService.ts - Google Drive integration
+// src/services/GoogleDriveService.ts - Fixed version
 import { google } from 'googleapis';
 
 export class GoogleDriveService {
@@ -6,10 +6,19 @@ export class GoogleDriveService {
   private auth;
   
   constructor(accessToken: string, refreshToken?: string) {
+    // Validate required parameters
+    if (!accessToken) {
+      throw new Error('Google access token is required');
+    }
+
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+      throw new Error('Google OAuth credentials not configured in environment');
+    }
+
     this.auth = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
+      process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback'
     );
     
     this.auth.setCredentials({ 
@@ -18,6 +27,8 @@ export class GoogleDriveService {
     });
     
     this.drive = google.drive({ version: 'v3', auth: this.auth });
+    
+    console.log('GoogleDriveService initialized with token:', accessToken.substring(0, 10) + '...');
   }
 
   async saveResume(
@@ -42,20 +53,18 @@ export class GoogleDriveService {
         description: `Resume for ${jobTitle} at ${company} - Generated on ${new Date().toLocaleDateString()}`
       };
       
-      const media = {
-        mimeType: 'application/pdf', // We'll convert to PDF for better compatibility
-        body: this.convertToPDF ? await this.convertToPDF(content) : content
-      };
+      // Format content for better readability
+      const formattedContent = this.formatResumeContent(content);
       
-      // For now, save as plain text (you can implement PDF conversion later)
-      const textMedia = {
-        mimeType: 'text/plain',
-        body: content
+      // Save as Google Doc for better formatting
+      const docMedia = {
+        mimeType: 'application/vnd.google-apps.document',
+        body: formattedContent
       };
       
       const file = await this.drive.files.create({
         requestBody: fileMetadata,
-        media: textMedia,
+        media: docMedia,
         fields: 'id, name, webViewLink, webContentLink'
       });
       
@@ -82,7 +91,7 @@ export class GoogleDriveService {
       console.error('❌ Failed to save resume to Drive:', errorMessage);
       
       // Try to refresh token if it's an auth error
-      if (errorMessage.includes('401') || errorMessage.includes('invalid_grant')) {
+      if (errorMessage.includes('401') || errorMessage.includes('invalid_grant') || errorMessage.includes('Invalid Credentials')) {
         console.log('🔄 Attempting to refresh Google token...');
         try {
           await this.refreshAccessToken();
@@ -95,6 +104,16 @@ export class GoogleDriveService {
       
       return null;
     }
+  }
+
+  // Format resume content for better readability
+  private formatResumeContent(content: string): string {
+    return content
+      .replace(/\*\s/g, '• ') // Replace asterisks with bullet points
+      .replace(/\*\*/g, '') // Remove markdown bold markers
+      .replace(/\n{3,}/g, '\n\n') // Normalize excessive line breaks
+      .replace(/^\s+/gm, '') // Remove leading spaces
+      .trim();
   }
 
   private async getOrCreateJobFolder(): Promise<string> {
@@ -210,19 +229,36 @@ export class GoogleDriveService {
   }
 
   // Test Drive connection
-  async testConnection(): Promise<{ success: boolean; message: string }> {
+  async testConnection(): Promise<{ success: boolean; message: string; details?: any }> {
     try {
-      const response = await this.drive.about.get({ fields: 'user, storageQuota' });
+      console.log('🧪 Testing Google Drive connection...');
+      
+      const response = await this.drive.about.get({ 
+        fields: 'user(displayName, emailAddress), storageQuota(limit, usage)' 
+      });
+      
+      const user = response.data.user;
+      const quota = response.data.storageQuota;
+      
+      console.log('✅ Google Drive connection successful');
+      console.log('User:', user?.displayName, user?.emailAddress);
       
       return {
         success: true,
-        message: `Connected as ${response.data.user?.displayName || 'Unknown'}`
+        message: `Connected as ${user?.displayName || 'Unknown'} (${user?.emailAddress || 'No email'})`,
+        details: {
+          user: user,
+          quota: quota
+        }
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ Google Drive connection failed:', errorMessage);
+      
       return {
         success: false,
-        message: `Connection failed: ${errorMessage}`
+        message: `Connection failed: ${errorMessage}`,
+        details: { error: errorMessage }
       };
     }
   }
@@ -233,6 +269,6 @@ export class GoogleDriveService {
     const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const type = customized ? 'AI_Customized' : 'Original';
     
-    return `Resume_${sanitize(company)}_${sanitize(jobTitle)}_${type}_${date}.txt`;
+    return `Resume_${sanitize(company)}_${sanitize(jobTitle)}_${type}_${date}`; // No file extension for Google Docs
   }
 }

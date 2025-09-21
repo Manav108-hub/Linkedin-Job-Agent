@@ -46,6 +46,26 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
+// Helper function to get actual database user (FIXED FOR ALL ENDPOINTS)
+async function getActualDatabaseUser(sessionUser: any): Promise<any> {
+  // First try to find by session ID
+  let dbUser = await UserModel.findById(sessionUser.id);
+  
+  if (!dbUser) {
+    console.log('User not found by session ID, trying email...');
+    // Fallback to email lookup
+    dbUser = await UserModel.findByEmail(sessionUser.email);
+    
+    if (dbUser) {
+      console.log('Found user by email - ID mismatch detected!');
+      console.log('Session ID:', sessionUser.id);
+      console.log('Database ID:', dbUser.id);
+    }
+  }
+  
+  return dbUser;
+}
+
 export default function apiRoutes(app: Express, io: SocketServer) {
   // ========================================
   // AUTOMATION ENDPOINTS
@@ -91,62 +111,151 @@ export default function apiRoutes(app: Express, io: SocketServer) {
     }
   });
 
-  // Test Google Drive connection
+  // Test Google Drive connection - UPDATED VERSION
   app.post("/api/automation/test-drive", async (req, res) => {
     try {
       const { userEmail } = req.body;
 
       if (!userEmail) {
-        return res.status(400).json({ error: "userEmail is required" });
+        return res.status(400).json({
+          success: false,
+          error: "userEmail is required",
+        });
       }
+
+      console.log(`🧪 Testing Google Drive for user: ${userEmail}`);
 
       const user = await UserModel.findByEmail(userEmail);
-      if (!user || !user.googleToken) {
-        return res
-          .status(400)
-          .json({ error: "User not found or Google token missing" });
+      if (!user) {
+        console.log(`❌ User not found: ${userEmail}`);
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
       }
 
-      const driveService = new GoogleDriveService(
-        user.googleToken ?? undefined,
-        user.googleRefreshToken ?? undefined
+      console.log("User found:", user.email);
+      console.log("Google token exists:", !!user.googleToken);
+      console.log("Google refresh token exists:", !!user.googleRefreshToken);
+      console.log(
+        "Google token preview:",
+        user.googleToken ? user.googleToken.substring(0, 20) + "..." : "null"
       );
-      const testResult = await driveService.testConnection();
 
-      if (testResult.success) {
-        // Test creating a sample file
-        const testFileName = `Test_File_${
-          new Date().toISOString().split("T")[0]
-        }.txt`;
-        const testContent = `This is a test file created on ${new Date().toLocaleString(
-          "en-IN",
-          { timeZone: "Asia/Kolkata" }
-        )}`;
+      // Check if user has Google token
+      if (!user.googleToken) {
+        console.log(`❌ No Google token for user: ${userEmail}`);
+        return res.status(400).json({
+          success: false,
+          error:
+            "Google account not connected. Please connect your Google account first.",
+          debug: {
+            userExists: true,
+            hasGoogleToken: false,
+            hasRefreshToken: !!user.googleRefreshToken,
+          },
+        });
+      }
 
-        const driveLink = await driveService.saveResume(
-          testContent,
-          testFileName,
-          "Test Position",
-          "Test Company"
+      // Validate environment variables
+      if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        console.log("❌ Google OAuth environment variables missing");
+        return res.status(500).json({
+          success: false,
+          error: "Google OAuth not configured on server",
+        });
+      }
+
+      // Create GoogleDriveService instance
+      let driveService;
+      try {
+        driveService = new GoogleDriveService(
+          user.googleToken,
+          user.googleRefreshToken || undefined
         );
+        console.log("✅ GoogleDriveService created successfully");
+      } catch (serviceError: unknown) {
+        const errorMessage =
+          serviceError instanceof Error
+            ? serviceError.message
+            : String(serviceError);
+        console.log("❌ Failed to create GoogleDriveService:", errorMessage);
+        return res.status(500).json({
+          success: false,
+          error: `Failed to initialize Google Drive service: ${errorMessage}`,
+        });
+      }
 
+      // Test connection first
+      console.log("Testing Google Drive connection...");
+      const testResult = await driveService.testConnection();
+      console.log("Connection test result:", testResult);
+
+      if (!testResult.success) {
+        return res.status(400).json({
+          success: false,
+          error: testResult.message,
+          details: testResult.details,
+        });
+      }
+
+      // Test creating a sample file
+      const testFileName = `Test_File_${
+        new Date().toISOString().split("T")[0]
+      }.txt`;
+      const testContent = `This is a test file created on ${new Date().toLocaleString(
+        "en-IN",
+        { timeZone: "Asia/Kolkata" }
+      )}
+
+User: ${user.name}
+Email: ${user.email}
+
+This file verifies that your Google Drive integration is working correctly.
+You can safely delete this file.
+
+Test completed successfully! ✅`;
+
+      console.log("Creating test file:", testFileName);
+
+      const driveLink = await driveService.saveResume(
+        testContent,
+        testFileName,
+        "Test Position",
+        "Test Company"
+      );
+
+      if (driveLink) {
+        console.log("✅ Test file created successfully:", driveLink);
         res.json({
           success: true,
           message: testResult.message,
           testFileLink: driveLink,
+          testFileName: testFileName,
           timestamp: new Date().toISOString(),
+          details: testResult.details,
         });
       } else {
-        res.status(400).json({
+        console.log("❌ Failed to create test file");
+        res.status(500).json({
           success: false,
-          message: testResult.message,
+          error: "Failed to create test file in Google Drive",
         });
       }
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       console.error("❌ Test Drive error:", errorMessage);
-      res.status(500).json({ error: errorMessage });
+      console.error(
+        "Error stack:",
+        error instanceof Error ? error.stack : "No stack trace"
+      );
+
+      res.status(500).json({
+        success: false,
+        error: errorMessage,
+        details: "Check server logs for more information",
+      });
     }
   });
 
@@ -196,7 +305,7 @@ export default function apiRoutes(app: Express, io: SocketServer) {
     }
   });
 
-  // Get user's automation status
+  // FIXED: Get user's automation status with proper user lookup
   app.get("/api/automation/status/:userEmail", async (req, res) => {
     try {
       const { userEmail } = req.params;
@@ -206,6 +315,7 @@ export default function apiRoutes(app: Express, io: SocketServer) {
         return res.status(404).json({ error: "User not found" });
       }
 
+      // ✅ Use database user ID for stats
       const stats = await jobService.getUserApplicationStats(user.id);
 
       const status = {
@@ -294,7 +404,7 @@ export default function apiRoutes(app: Express, io: SocketServer) {
     }
   });
 
-  // Get recent automation logs
+  // FIXED: Get recent automation logs with proper user lookup
   app.get("/api/automation/logs/:userEmail", async (req, res) => {
     try {
       const { userEmail } = req.params;
@@ -305,6 +415,7 @@ export default function apiRoutes(app: Express, io: SocketServer) {
         return res.status(404).json({ error: "User not found" });
       }
 
+      // ✅ Use database user ID
       const logs = await AutomationLogModel.findByUserId(user.id, limit);
 
       res.json({
@@ -360,11 +471,8 @@ export default function apiRoutes(app: Express, io: SocketServer) {
   });
 
   // ========================================
-  // EXISTING ENDPOINTS
+  // FIXED JOB & RESUME ENDPOINTS
   // ========================================
-
-  // Get user status
-  
 
   // Resume upload endpoint
   app.post(
@@ -377,11 +485,17 @@ export default function apiRoutes(app: Express, io: SocketServer) {
       console.log("File:", req.file?.originalname, "Type:", req.file?.mimetype);
 
       try {
-        const user = req.user!;
+        const sessionUser = req.user!;
         const file = req.file;
 
         if (!file) {
           return res.status(400).json({ error: "No resume file provided" });
+        }
+
+        // ✅ Get actual database user
+        const dbUser = await getActualDatabaseUser(sessionUser);
+        if (!dbUser) {
+          return res.status(404).json({ error: "User not found in database" });
         }
 
         // Extract text content based on file type
@@ -414,7 +528,9 @@ export default function apiRoutes(app: Express, io: SocketServer) {
         } catch (extractionError) {
           console.log(
             "Text extraction failed, creating placeholder:",
-            extractionError instanceof Error ? extractionError.message : String(extractionError)
+            extractionError instanceof Error
+              ? extractionError.message
+              : String(extractionError)
           );
           resumeContent = createPlaceholderContent(file);
           textExtractionSuccess = false;
@@ -431,8 +547,7 @@ export default function apiRoutes(app: Express, io: SocketServer) {
         }
 
         // Get existing profile data
-        const existingUser = await UserModel.findById(user.id);
-        const existingProfileData = (existingUser?.profileData as any) || {};
+        const existingProfileData = (dbUser.profileData as any) || {};
 
         // Create sanitized profile data
         const sanitizedProfileData = {
@@ -447,11 +562,11 @@ export default function apiRoutes(app: Express, io: SocketServer) {
 
         console.log("Saving sanitized profile data...");
 
-        // Update user profile with resume using Prisma
+        // ✅ Update user profile with resume using database user ID
         await UserModel.create({
-          id: user.id,
-          name: user.name,
-          email: user.email,
+          id: dbUser.id,  // Use database user ID
+          name: dbUser.name,
+          email: dbUser.email,
           profileData: sanitizedProfileData,
         });
 
@@ -494,6 +609,496 @@ export default function apiRoutes(app: Express, io: SocketServer) {
       }
     }
   );
+
+  // FIXED: Get user's current resume
+  app.get("/api/user/resume", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser || !dbUser.profileData) {
+        return res.status(404).json({ error: "No resume found" });
+      }
+
+      const profileData = dbUser.profileData as any;
+
+      if (!profileData.resume_content) {
+        return res.status(404).json({ error: "No resume content found" });
+      }
+
+      res.json({
+        content: profileData.resume_content,
+        filename: profileData.resume_filename,
+        uploadedAt: profileData.resume_uploaded_at,
+        size: profileData.resume_size,
+      });
+    } catch (error) {
+      console.error("Error getting resume:", error);
+      res.status(500).json({ error: "Failed to get resume" });
+    }
+  });
+
+  // FIXED: Start job search
+  app.post("/api/jobs/start", verifyToken, async (req, res) => {
+    console.log("=== JOB START ENDPOINT HIT ===");
+    console.log("Request body:", req.body);
+    console.log("User:", req.user?.email);
+
+    const sessionUser = req.user!;
+
+    // ✅ Get actual database user
+    const dbUser = await getActualDatabaseUser(sessionUser);
+    if (!dbUser) {
+      return res.status(404).json({ error: "User not found in database" });
+    }
+
+    if (!sessionUser.linkedinToken) {
+      console.log("ERROR: No LinkedIn token");
+      return res.status(400).json({
+        error: "LinkedIn account not connected",
+        needsConnection: ["linkedin"],
+      });
+    }
+
+    if (!sessionUser.googleToken) {
+      console.log("ERROR: No Google token");
+      return res.status(400).json({
+        error: "Google account not connected",
+        needsConnection: ["google"],
+      });
+    }
+
+    const criteria: JobSearchCriteria = {
+      keywords: req.body.keywords || ["typescript", "react", "node.js"],
+      location: req.body.location || "",
+      experienceLevel: req.body.experienceLevel || "mid-level",
+      jobType: req.body.jobType || "full-time",
+    };
+
+    console.log("Job search criteria:", criteria);
+
+    const userSocket = Array.from(io.sockets.sockets.values()).find(
+      (socket) => (socket as any).userId === sessionUser.id
+    );
+
+    console.log("User socket found:", !!userSocket);
+
+    if (!userSocket) {
+      console.log("ERROR: No socket connection found");
+      return res.status(400).json({ error: "Real-time connection required" });
+    }
+
+    console.log("SUCCESS: Starting job search for user");
+    res.json({
+      message: "Job search started",
+      sessionId: sessionUser.id,
+      criteria,
+    });
+
+    // ✅ Pass session user (with tokens) to job service
+    jobService.processJobsForUser(sessionUser, userSocket, criteria).catch((error) => {
+      console.error("Job processing failed:", error);
+      userSocket.emit("job_search_error", {
+        error: "Job search encountered an error",
+      });
+    });
+  });
+
+  // FIXED: Get job application history
+  app.get("/api/jobs/history", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const limit = parseInt(req.query.limit as string) || 50;
+
+      console.log(`Getting history for session user: ${sessionUser.email} (ID: ${sessionUser.id})`);
+
+      // ✅ Get actual database user by email
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        console.log(`Database user not found for email: ${sessionUser.email}`);
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      console.log(`Found database user ID: ${dbUser.id} (email: ${dbUser.email})`);
+
+      // ✅ Use the correct database user ID
+      const applications = await JobApplicationModel.findByUserId(
+        dbUser.id,  // Use actual database user ID
+        limit
+      );
+
+      console.log(`Found ${applications.length} applications for user ${dbUser.email}`);
+
+      res.json({
+        applications,
+        total: applications.length,
+        userId: dbUser.id,        // Return database user ID
+        sessionUserId: sessionUser.id,  // For debugging
+        debug: {
+          sessionId: sessionUser.id,
+          databaseId: dbUser.id,
+          idMismatch: sessionUser.id !== dbUser.id
+        }
+      });
+    } catch (error) {
+      console.error("Error getting job history:", error);
+      res.status(500).json({ error: "Failed to get job history" });
+    }
+  });
+
+  // FIXED: Get specific job application details
+  app.get("/api/jobs/:jobId", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { jobId } = req.params;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const application = await JobApplicationModel.findById(jobId);
+      if (!application || application.userId !== dbUser.id) {
+        return res.status(404).json({ error: "Job application not found" });
+      }
+
+      const hrContacts = await HRContactModel.findByJobId(application.jobId);
+      const resume = await ResumeModel.findByUserAndJob(
+        dbUser.id,  // Use database user ID
+        application.jobId
+      );
+      const emailDrafts = await EmailDraftModel.findByJobId(application.jobId);
+
+      res.json({
+        application,
+        hrContacts,
+        resume,
+        emailDrafts,
+      });
+    } catch (error) {
+      console.error("Error getting job details:", error);
+      res.status(500).json({ error: "Failed to get job details" });
+    }
+  });
+
+  // FIXED: Get customized resume for specific job
+  app.get("/api/jobs/:jobId/resume", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { jobId } = req.params;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const application = await JobApplicationModel.findById(jobId);
+      if (!application || application.userId !== dbUser.id) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const resume = await ResumeModel.findByUserAndJob(
+        dbUser.id,  // Use database user ID
+        application.jobId
+      );
+      if (!resume) {
+        return res.status(404).json({ error: "Resume not found" });
+      }
+
+      res.json({
+        id: resume.id,
+        jobId: application.jobId,
+        originalContent: resume.originalContent,
+        customizedContent: resume.customizedContent,
+        formatType: resume.formatType,
+        createdAt: resume.createdAt,
+      });
+    } catch (error) {
+      console.error("Error getting resume:", error);
+      res.status(500).json({ error: "Failed to get resume" });
+    }
+  });
+
+  // FIXED: Generate email draft for HR contact
+  app.post("/api/jobs/:jobId/email-draft", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { jobId } = req.params;
+      const { hrContactId, emailType = "application" } = req.body;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const application = await JobApplicationModel.findById(jobId);
+      if (!application || application.userId !== dbUser.id) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      let hrContact = null;
+      if (hrContactId) {
+        hrContact = await HRContactModel.findById(hrContactId);
+      } else {
+        const contacts = await HRContactModel.findByJobId(application.jobId);
+        hrContact = contacts[0] || null;
+      }
+
+      if (!hrContact) {
+        return res.status(404).json({ error: "HR contact not found" });
+      }
+
+      const resume = await ResumeModel.findByUserAndJob(
+        dbUser.id,  // Use database user ID
+        application.jobId
+      );
+      const userSkills = ["TypeScript", "React", "Node.js"];
+
+      const formattedContact = {
+        id: hrContact.id,
+        name: hrContact.name || undefined,
+        email: hrContact.email || undefined,
+        title: hrContact.title || undefined,
+        company: hrContact.company || undefined,
+        linkedinProfile: hrContact.linkedinProfile || undefined,
+        phone: hrContact.phone || undefined,
+        jobId: hrContact.jobId,
+        extractedAt: hrContact.extractedAt,
+      };
+
+      const emailDraft = hrExtractor.generateEmailDraft(
+        formattedContact,
+        "Position",
+        dbUser.name,  // Use database user name
+        userSkills
+      );
+
+      const savedDraft = await EmailDraftModel.create({
+        userId: dbUser.id,  // Use database user ID
+        jobId: application.jobId,
+        hrContactId: hrContact.id || "",
+        subject: emailDraft.subject,
+        body: emailDraft.body,
+        emailType: emailType,
+      });
+
+      res.json({
+        draftId: savedDraft?.id,
+        hrContact: {
+          name: hrContact.name,
+          email: hrContact.email,
+          title: hrContact.title,
+        },
+        emailDraft,
+      });
+    } catch (error) {
+      console.error("Error generating email draft:", error);
+      res.status(500).json({ error: "Failed to generate email draft" });
+    }
+  });
+
+  // FIXED: Get all user's resumes
+  app.get("/api/resumes", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const resumes = await ResumeModel.findByUserId(dbUser.id);
+
+      res.json({
+        resumes: resumes.map((resume: any) => ({
+          id: resume.id,
+          jobTitle: resume.jobListing?.title,
+          company: resume.jobListing?.company,
+          formatType: resume.formatType,
+          createdAt: resume.createdAt,
+        })),
+      });
+    } catch (error) {
+      console.error("Error getting resumes:", error);
+      res.status(500).json({ error: "Failed to get resumes" });
+    }
+  });
+
+  // FIXED: Update job application status
+  app.put("/api/jobs/:jobId/status", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { jobId } = req.params;
+      const { status, notes } = req.body;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const application = await JobApplicationModel.findById(jobId);
+      if (!application || application.userId !== dbUser.id) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      await JobApplicationModel.updateStatus(jobId, status, notes);
+
+      res.json({
+        message: "Status updated successfully",
+        jobId,
+        newStatus: status,
+      });
+    } catch (error) {
+      console.error("Error updating job status:", error);
+      res.status(500).json({ error: "Failed to update job status" });
+    }
+  });
+
+  // FIXED: Update user profile
+  app.put("/api/user/profile", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { name, email, profile_data, resume_doc_id } = req.body;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      await UserModel.create({
+        id: dbUser.id,  // Use database user ID
+        name: name || dbUser.name,
+        email: email || dbUser.email,
+        profileData: profile_data,
+        resumeDocId: resume_doc_id,
+      });
+
+      res.json({
+        message: "Profile updated successfully",
+        user: { name, email },
+      });
+    } catch (error) {
+      console.error("Error updating user profile:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // FIXED: Get HR contacts for a specific job
+  app.get("/api/jobs/:jobId/hr-contacts", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { jobId } = req.params;
+
+      // ✅ Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      const application = await JobApplicationModel.findById(jobId);
+      if (!application || application.userId !== dbUser.id) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const hrContacts = await HRContactModel.findByJobId(application.jobId);
+
+      res.json({
+        jobId: application.jobId,
+        contacts: hrContacts,
+      });
+    } catch (error) {
+      console.error("Error getting HR contacts:", error);
+      res.status(500).json({ error: "Failed to get HR contacts" });
+    }
+  });
+
+  // ========================================
+  // DEBUG ENDPOINT
+  // ========================================
+
+  // Debug endpoint to check user session vs database mismatch
+  app.get("/api/debug/user-session", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      
+      console.log("=== DEBUG USER SESSION ===");
+      console.log("Session User ID:", sessionUser.id);
+      console.log("Session User Email:", sessionUser.email);
+
+      // Try to find by session ID
+      const userById = await UserModel.findById(sessionUser.id);
+      console.log("Found by session ID:", !!userById);
+
+      // Try to find by email
+      const userByEmail = await UserModel.findByEmail(sessionUser.email);
+      console.log("Found by email:", !!userByEmail);
+
+      if (userByEmail) {
+        console.log("Database User ID:", userByEmail.id);
+        console.log("ID Mismatch:", sessionUser.id !== userByEmail.id);
+      }
+
+      // Check applications count for both IDs
+      let applicationsBySessionId = 0;
+      let applicationsByDatabaseId = 0;
+
+      try {
+        const sessionApps = await JobApplicationModel.findByUserId(sessionUser.id, 10);
+        applicationsBySessionId = sessionApps.length;
+      } catch (error) {
+        console.log("Error getting applications by session ID:", error);
+      }
+
+      if (userByEmail) {
+        try {
+          const dbApps = await JobApplicationModel.findByUserId(userByEmail.id, 10);
+          applicationsByDatabaseId = dbApps.length;
+        } catch (error) {
+          console.log("Error getting applications by database ID:", error);
+        }
+      }
+
+      res.json({
+        debug: {
+          sessionUser: {
+            id: sessionUser.id,
+            email: sessionUser.email,
+            name: sessionUser.name
+          },
+          lookupResults: {
+            foundBySessionId: !!userById,
+            foundByEmail: !!userByEmail,
+            databaseUserId: userByEmail?.id || null,
+            idMismatch: userByEmail ? sessionUser.id !== userByEmail.id : null
+          },
+          applicationCounts: {
+            bySessionId: applicationsBySessionId,
+            byDatabaseId: applicationsByDatabaseId
+          },
+          recommendation: userByEmail && sessionUser.id !== userByEmail.id 
+            ? "Use email lookup for database operations"
+            : "IDs match, no issues detected"
+        }
+      });
+    } catch (error) {
+      console.error("Debug endpoint error:", error);
+      res.status(500).json({ 
+        error: "Debug failed",
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // ========================================
+  // HELPER FUNCTIONS
+  // ========================================
 
   // Helper function to extract text from PDF
   async function extractPDFText(filePath: string): Promise<string> {
@@ -596,348 +1201,4 @@ but AI customization may be limited without the actual resume text content.
 You can still use the job search functionality, and the system will use
 this document reference for your applications.`;
   }
-
-  // Get user's current resume
-  app.get("/api/user/resume", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const dbUser = await UserModel.findById(user.id);
-
-      if (!dbUser || !dbUser.profileData) {
-        return res.status(404).json({ error: "No resume found" });
-      }
-
-      const profileData = dbUser.profileData as any;
-
-      if (!profileData.resume_content) {
-        return res.status(404).json({ error: "No resume content found" });
-      }
-
-      res.json({
-        content: profileData.resume_content,
-        filename: profileData.resume_filename,
-        uploadedAt: profileData.resume_uploaded_at,
-        size: profileData.resume_size,
-      });
-    } catch (error) {
-      console.error("Error getting resume:", error);
-      res.status(500).json({ error: "Failed to get resume" });
-    }
-  });
-
-  // Start job search
-  app.post("/api/jobs/start", verifyToken, async (req, res) => {
-    console.log("=== JOB START ENDPOINT HIT ===");
-    console.log("Request body:", req.body);
-    console.log("User:", req.user?.email);
-    console.log(
-      "User tokens - LinkedIn:",
-      !!req.user?.linkedinToken,
-      "Google:",
-      !!req.user?.googleToken
-    );
-
-    const user = req.user!;
-
-    if (!user.linkedinToken) {
-      console.log("ERROR: No LinkedIn token");
-      return res.status(400).json({
-        error: "LinkedIn account not connected",
-        needsConnection: ["linkedin"],
-      });
-    }
-
-    if (!user.googleToken) {
-      console.log("ERROR: No Google token");
-      return res.status(400).json({
-        error: "Google account not connected",
-        needsConnection: ["google"],
-      });
-    }
-
-    const criteria: JobSearchCriteria = {
-      keywords: req.body.keywords || ["typescript", "react", "node.js"],
-      location: req.body.location || "",
-      experienceLevel: req.body.experienceLevel || "mid-level",
-      jobType: req.body.jobType || "full-time",
-    };
-
-    console.log("Job search criteria:", criteria);
-
-    const userSocket = Array.from(io.sockets.sockets.values()).find(
-      (socket) => (socket as any).userId === user.id
-    );
-
-    console.log("User socket found:", !!userSocket);
-
-    if (!userSocket) {
-      console.log("ERROR: No socket connection found");
-      return res.status(400).json({ error: "Real-time connection required" });
-    }
-
-    console.log("SUCCESS: Starting job search for user");
-    res.json({
-      message: "Job search started",
-      sessionId: user.id,
-      criteria,
-    });
-
-    jobService.processJobsForUser(user, userSocket, criteria).catch((error) => {
-      console.error("Job processing failed:", error);
-      userSocket.emit("job_search_error", {
-        error: "Job search encountered an error",
-      });
-    });
-  });
-
-  // Get job application history
-  app.get("/api/jobs/history", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const limit = parseInt(req.query.limit as string) || 50;
-
-      const applications = await JobApplicationModel.findByUserId(
-        user.id,
-        limit
-      );
-
-      res.json({
-        applications,
-        total: applications.length,
-        userId: user.id,
-      });
-    } catch (error) {
-      console.error("Error getting job history:", error);
-      res.status(500).json({ error: "Failed to get job history" });
-    }
-  });
-
-  // Get specific job application details
-  app.get("/api/jobs/:jobId", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { jobId } = req.params;
-
-      const application = await JobApplicationModel.findById(jobId);
-      if (!application || application.userId !== user.id) {
-        return res.status(404).json({ error: "Job application not found" });
-      }
-
-      const hrContacts = await HRContactModel.findByJobId(application.jobId);
-      const resume = await ResumeModel.findByUserAndJob(
-        user.id,
-        application.jobId
-      );
-      const emailDrafts = await EmailDraftModel.findByJobId(application.jobId);
-
-      res.json({
-        application,
-        hrContacts,
-        resume,
-        emailDrafts,
-      });
-    } catch (error) {
-      console.error("Error getting job details:", error);
-      res.status(500).json({ error: "Failed to get job details" });
-    }
-  });
-
-  // Get customized resume for specific job
-  app.get("/api/jobs/:jobId/resume", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { jobId } = req.params;
-
-      const application = await JobApplicationModel.findById(jobId);
-      if (!application || application.userId !== user.id) {
-        return res.status(404).json({ error: "Job not found" });
-      }
-
-      const resume = await ResumeModel.findByUserAndJob(
-        user.id,
-        application.jobId
-      );
-      if (!resume) {
-        return res.status(404).json({ error: "Resume not found" });
-      }
-
-      res.json({
-        id: resume.id,
-        jobId: application.jobId,
-        originalContent: resume.originalContent,
-        customizedContent: resume.customizedContent,
-        formatType: resume.formatType,
-        createdAt: resume.createdAt,
-      });
-    } catch (error) {
-      console.error("Error getting resume:", error);
-      res.status(500).json({ error: "Failed to get resume" });
-    }
-  });
-
-  // Generate email draft for HR contact
-  app.post("/api/jobs/:jobId/email-draft", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { jobId } = req.params;
-      const { hrContactId, emailType = "application" } = req.body;
-
-      const application = await JobApplicationModel.findById(jobId);
-      if (!application || application.userId !== user.id) {
-        return res.status(404).json({ error: "Job not found" });
-      }
-
-      let hrContact = null;
-      if (hrContactId) {
-        hrContact = await HRContactModel.findById(hrContactId);
-      } else {
-        const contacts = await HRContactModel.findByJobId(application.jobId);
-        hrContact = contacts[0] || null;
-      }
-
-      if (!hrContact) {
-        return res.status(404).json({ error: "HR contact not found" });
-      }
-
-      const resume = await ResumeModel.findByUserAndJob(
-        user.id,
-        application.jobId
-      );
-      const userSkills = ["TypeScript", "React", "Node.js"];
-
-      const formattedContact = {
-        id: hrContact.id,
-        name: hrContact.name || undefined,
-        email: hrContact.email || undefined,
-        title: hrContact.title || undefined,
-        company: hrContact.company || undefined,
-        linkedinProfile: hrContact.linkedinProfile || undefined,
-        phone: hrContact.phone || undefined,
-        jobId: hrContact.jobId,
-        extractedAt: hrContact.extractedAt,
-      };
-
-      const emailDraft = hrExtractor.generateEmailDraft(
-        formattedContact,
-        "Position",
-        user.name,
-        userSkills
-      );
-
-      const savedDraft = await EmailDraftModel.create({
-        userId: user.id,
-        jobId: application.jobId,
-        hrContactId: hrContact.id || "",
-        subject: emailDraft.subject,
-        body: emailDraft.body,
-        emailType: emailType,
-      });
-
-      res.json({
-        draftId: savedDraft?.id,
-        hrContact: {
-          name: hrContact.name,
-          email: hrContact.email,
-          title: hrContact.title,
-        },
-        emailDraft,
-      });
-    } catch (error) {
-      console.error("Error generating email draft:", error);
-      res.status(500).json({ error: "Failed to generate email draft" });
-    }
-  });
-
-  // Get all user's resumes
-  app.get("/api/resumes", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const resumes = await ResumeModel.findByUserId(user.id);
-
-      res.json({
-        resumes: resumes.map((resume: any) => ({
-          id: resume.id,
-          jobTitle: resume.jobListing?.title,
-          company: resume.jobListing?.company,
-          formatType: resume.formatType,
-          createdAt: resume.createdAt,
-        })),
-      });
-    } catch (error) {
-      console.error("Error getting resumes:", error);
-      res.status(500).json({ error: "Failed to get resumes" });
-    }
-  });
-
-  // Update job application status
-  app.put("/api/jobs/:jobId/status", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { jobId } = req.params;
-      const { status, notes } = req.body;
-
-      const application = await JobApplicationModel.findById(jobId);
-      if (!application || application.userId !== user.id) {
-        return res.status(404).json({ error: "Job not found" });
-      }
-
-      await JobApplicationModel.updateStatus(jobId, status, notes);
-
-      res.json({
-        message: "Status updated successfully",
-        jobId,
-        newStatus: status,
-      });
-    } catch (error) {
-      console.error("Error updating job status:", error);
-      res.status(500).json({ error: "Failed to update job status" });
-    }
-  });
-
-  // Update user profile
-  app.put("/api/user/profile", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { name, email, profile_data, resume_doc_id } = req.body;
-
-      await UserModel.create({
-        id: user.id,
-        name: name || user.name,
-        email: email || user.email,
-        profileData: profile_data,
-        resumeDocId: resume_doc_id,
-      });
-
-      res.json({
-        message: "Profile updated successfully",
-        user: { name, email },
-      });
-    } catch (error) {
-      console.error("Error updating user profile:", error);
-      res.status(500).json({ error: "Failed to update profile" });
-    }
-  });
-
-  // Get HR contacts for a specific job
-  app.get("/api/jobs/:jobId/hr-contacts", verifyToken, async (req, res) => {
-    try {
-      const user = req.user!;
-      const { jobId } = req.params;
-
-      const application = await JobApplicationModel.findById(jobId);
-      if (!application || application.userId !== user.id) {
-        return res.status(404).json({ error: "Job not found" });
-      }
-
-      const hrContacts = await HRContactModel.findByJobId(application.jobId);
-
-      res.json({
-        jobId: application.jobId,
-        contacts: hrContacts,
-      });
-    } catch (error) {
-      console.error("Error getting HR contacts:", error);
-      res.status(500).json({ error: "Failed to get HR contacts" });
-    }
-  });
 }
