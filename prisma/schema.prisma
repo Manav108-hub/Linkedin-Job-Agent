@@ -23,6 +23,8 @@ model User {
   linkedinToken       String?   @map("linkedin_token")
   googleToken         String?   @map("google_token")
   googleRefreshToken  String?   @map("google_refresh_token")
+  resumeSections      Json?     @map("resume_sections") 
+  originalFileBuffer  Bytes?    @map("original_file_buffer") 
   
   // Automation settings
   automationEnabled   Boolean   @default(true) @map("automation_enabled")

@@ -50,19 +50,19 @@ const upload = multer({
 async function getActualDatabaseUser(sessionUser: any): Promise<any> {
   // First try to find by session ID
   let dbUser = await UserModel.findById(sessionUser.id);
-  
+
   if (!dbUser) {
-    console.log('User not found by session ID, trying email...');
+    console.log("User not found by session ID, trying email...");
     // Fallback to email lookup
     dbUser = await UserModel.findByEmail(sessionUser.email);
-    
+
     if (dbUser) {
-      console.log('Found user by email - ID mismatch detected!');
-      console.log('Session ID:', sessionUser.id);
-      console.log('Database ID:', dbUser.id);
+      console.log("Found user by email - ID mismatch detected!");
+      console.log("Session ID:", sessionUser.id);
+      console.log("Database ID:", dbUser.id);
     }
   }
-  
+
   return dbUser;
 }
 
@@ -564,7 +564,7 @@ Test completed successfully! ✅`;
 
         // ✅ Update user profile with resume using database user ID
         await UserModel.create({
-          id: dbUser.id,  // Use database user ID
+          id: dbUser.id, // Use database user ID
           name: dbUser.name,
           email: dbUser.email,
           profileData: sanitizedProfileData,
@@ -614,7 +614,7 @@ Test completed successfully! ✅`;
   app.get("/api/user/resume", verifyToken, async (req, res) => {
     try {
       const sessionUser = req.user!;
-      
+
       // ✅ Get actual database user
       const dbUser = await getActualDatabaseUser(sessionUser);
       if (!dbUser || !dbUser.profileData) {
@@ -697,12 +697,14 @@ Test completed successfully! ✅`;
     });
 
     // ✅ Pass session user (with tokens) to job service
-    jobService.processJobsForUser(sessionUser, userSocket, criteria).catch((error) => {
-      console.error("Job processing failed:", error);
-      userSocket.emit("job_search_error", {
-        error: "Job search encountered an error",
+    jobService
+      .processJobsForUser(sessionUser, userSocket, criteria)
+      .catch((error) => {
+        console.error("Job processing failed:", error);
+        userSocket.emit("job_search_error", {
+          error: "Job search encountered an error",
+        });
       });
-    });
   });
 
   // FIXED: Get job application history
@@ -711,7 +713,9 @@ Test completed successfully! ✅`;
       const sessionUser = req.user!;
       const limit = parseInt(req.query.limit as string) || 50;
 
-      console.log(`Getting history for session user: ${sessionUser.email} (ID: ${sessionUser.id})`);
+      console.log(
+        `Getting history for session user: ${sessionUser.email} (ID: ${sessionUser.id})`
+      );
 
       // ✅ Get actual database user by email
       const dbUser = await getActualDatabaseUser(sessionUser);
@@ -720,26 +724,30 @@ Test completed successfully! ✅`;
         return res.status(404).json({ error: "User not found in database" });
       }
 
-      console.log(`Found database user ID: ${dbUser.id} (email: ${dbUser.email})`);
+      console.log(
+        `Found database user ID: ${dbUser.id} (email: ${dbUser.email})`
+      );
 
       // ✅ Use the correct database user ID
       const applications = await JobApplicationModel.findByUserId(
-        dbUser.id,  // Use actual database user ID
+        dbUser.id, // Use actual database user ID
         limit
       );
 
-      console.log(`Found ${applications.length} applications for user ${dbUser.email}`);
+      console.log(
+        `Found ${applications.length} applications for user ${dbUser.email}`
+      );
 
       res.json({
         applications,
         total: applications.length,
-        userId: dbUser.id,        // Return database user ID
-        sessionUserId: sessionUser.id,  // For debugging
+        userId: dbUser.id, // Return database user ID
+        sessionUserId: sessionUser.id, // For debugging
         debug: {
           sessionId: sessionUser.id,
           databaseId: dbUser.id,
-          idMismatch: sessionUser.id !== dbUser.id
-        }
+          idMismatch: sessionUser.id !== dbUser.id,
+        },
       });
     } catch (error) {
       console.error("Error getting job history:", error);
@@ -766,7 +774,7 @@ Test completed successfully! ✅`;
 
       const hrContacts = await HRContactModel.findByJobId(application.jobId);
       const resume = await ResumeModel.findByUserAndJob(
-        dbUser.id,  // Use database user ID
+        dbUser.id, // Use database user ID
         application.jobId
       );
       const emailDrafts = await EmailDraftModel.findByJobId(application.jobId);
@@ -801,7 +809,7 @@ Test completed successfully! ✅`;
       }
 
       const resume = await ResumeModel.findByUserAndJob(
-        dbUser.id,  // Use database user ID
+        dbUser.id, // Use database user ID
         application.jobId
       );
       if (!resume) {
@@ -853,7 +861,7 @@ Test completed successfully! ✅`;
       }
 
       const resume = await ResumeModel.findByUserAndJob(
-        dbUser.id,  // Use database user ID
+        dbUser.id, // Use database user ID
         application.jobId
       );
       const userSkills = ["TypeScript", "React", "Node.js"];
@@ -873,12 +881,12 @@ Test completed successfully! ✅`;
       const emailDraft = hrExtractor.generateEmailDraft(
         formattedContact,
         "Position",
-        dbUser.name,  // Use database user name
+        dbUser.name, // Use database user name
         userSkills
       );
 
       const savedDraft = await EmailDraftModel.create({
-        userId: dbUser.id,  // Use database user ID
+        userId: dbUser.id, // Use database user ID
         jobId: application.jobId,
         hrContactId: hrContact.id || "",
         subject: emailDraft.subject,
@@ -905,7 +913,7 @@ Test completed successfully! ✅`;
   app.get("/api/resumes", verifyToken, async (req, res) => {
     try {
       const sessionUser = req.user!;
-      
+
       // ✅ Get actual database user
       const dbUser = await getActualDatabaseUser(sessionUser);
       if (!dbUser) {
@@ -973,7 +981,7 @@ Test completed successfully! ✅`;
       }
 
       await UserModel.create({
-        id: dbUser.id,  // Use database user ID
+        id: dbUser.id, // Use database user ID
         name: name || dbUser.name,
         email: email || dbUser.email,
         profileData: profile_data,
@@ -1027,7 +1035,7 @@ Test completed successfully! ✅`;
   app.get("/api/debug/user-session", verifyToken, async (req, res) => {
     try {
       const sessionUser = req.user!;
-      
+
       console.log("=== DEBUG USER SESSION ===");
       console.log("Session User ID:", sessionUser.id);
       console.log("Session User Email:", sessionUser.email);
@@ -1050,7 +1058,10 @@ Test completed successfully! ✅`;
       let applicationsByDatabaseId = 0;
 
       try {
-        const sessionApps = await JobApplicationModel.findByUserId(sessionUser.id, 10);
+        const sessionApps = await JobApplicationModel.findByUserId(
+          sessionUser.id,
+          10
+        );
         applicationsBySessionId = sessionApps.length;
       } catch (error) {
         console.log("Error getting applications by session ID:", error);
@@ -1058,7 +1069,10 @@ Test completed successfully! ✅`;
 
       if (userByEmail) {
         try {
-          const dbApps = await JobApplicationModel.findByUserId(userByEmail.id, 10);
+          const dbApps = await JobApplicationModel.findByUserId(
+            userByEmail.id,
+            10
+          );
           applicationsByDatabaseId = dbApps.length;
         } catch (error) {
           console.log("Error getting applications by database ID:", error);
@@ -1070,28 +1084,29 @@ Test completed successfully! ✅`;
           sessionUser: {
             id: sessionUser.id,
             email: sessionUser.email,
-            name: sessionUser.name
+            name: sessionUser.name,
           },
           lookupResults: {
             foundBySessionId: !!userById,
             foundByEmail: !!userByEmail,
             databaseUserId: userByEmail?.id || null,
-            idMismatch: userByEmail ? sessionUser.id !== userByEmail.id : null
+            idMismatch: userByEmail ? sessionUser.id !== userByEmail.id : null,
           },
           applicationCounts: {
             bySessionId: applicationsBySessionId,
-            byDatabaseId: applicationsByDatabaseId
+            byDatabaseId: applicationsByDatabaseId,
           },
-          recommendation: userByEmail && sessionUser.id !== userByEmail.id 
-            ? "Use email lookup for database operations"
-            : "IDs match, no issues detected"
-        }
+          recommendation:
+            userByEmail && sessionUser.id !== userByEmail.id
+              ? "Use email lookup for database operations"
+              : "IDs match, no issues detected",
+        },
       });
     } catch (error) {
       console.error("Debug endpoint error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Debug failed",
-        details: error instanceof Error ? error.message : String(error)
+        details: error instanceof Error ? error.message : String(error),
       });
     }
   });
@@ -1201,4 +1216,95 @@ but AI customization may be limited without the actual resume text content.
 You can still use the job search functionality, and the system will use
 this document reference for your applications.`;
   }
+
+  app.get(
+    "/api/telegram/detect-chat/:userEmail",
+    verifyToken,
+    async (req, res) => {
+      try {
+        const { userEmail } = req.params;
+        const sessionUser = req.user!;
+
+        // Security check - users can only detect their own chat ID
+        if (sessionUser.email !== userEmail) {
+          return res
+            .status(403)
+            .json({ success: false, message: "Access denied" });
+        }
+
+        const result = await telegramService.detectUserChatId(userEmail);
+        res.json(result);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        console.error("Error detecting chat ID:", errorMessage);
+        res.status(500).json({ success: false, message: "Detection failed" });
+      }
+    }
+  );
+
+  app.post("/api/telegram/setup", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { chatId } = req.body;
+
+      if (!chatId) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Chat ID is required" });
+      }
+
+      // Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found in database" });
+      }
+
+      const result = await telegramService.setupUserTelegram(
+        dbUser.email,
+        chatId
+      );
+
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error("Error setting up Telegram:", errorMessage);
+      res.status(500).json({ success: false, error: "Setup failed" });
+    }
+  });
+
+  // Test user's Telegram configuration
+  app.post("/api/telegram/test", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+
+      // Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found in database" });
+      }
+
+      const result = await telegramService.testUserTelegram(dbUser.email);
+
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error("Error testing Telegram:", errorMessage);
+      res.status(500).json({ success: false, error: "Test failed" });
+    }
+  });
 }

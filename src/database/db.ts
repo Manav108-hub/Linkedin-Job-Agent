@@ -1,19 +1,22 @@
 // src/database/db.ts - Prisma Client Implementation (FIXED)
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from "@prisma/client";
 
 // Initialize Prisma Client
 export const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'info', 'warn', 'error'] : ['error'],
+  log:
+    process.env.NODE_ENV === "development"
+      ? ["query", "info", "warn", "error"]
+      : ["error"],
 });
 
 // Database connection
 export const initDatabase = async () => {
   try {
     await prisma.$connect();
-    console.log('✅ Database connected successfully');
+    console.log("✅ Database connected successfully");
     return prisma;
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
+    console.error("❌ Database connection failed:", error);
     throw error;
   }
 };
@@ -24,39 +27,43 @@ export const getDatabase = () => {
 
 export const closeDatabase = async () => {
   await prisma.$disconnect();
-  console.log('✅ Database connection closed');
+  console.log("✅ Database connection closed");
 };
 
 export const getDatabaseStats = async () => {
   const [users, jobs, applications, resumes, hrContacts] = await Promise.all([
-    prisma.user.count(),           // Using PascalCase model names
+    prisma.user.count(), // Using PascalCase model names
     prisma.jobListing.count(),
     prisma.jobApplication.count(),
     prisma.resume.count(),
     prisma.hrContact.count(),
   ]);
-  
+
   return {
     users,
     jobs,
     applications,
     resumes,
-    hr_contacts: hrContacts
+    hr_contacts: hrContacts,
   };
 };
 
 // Database Models using Prisma
 export class UserModel {
-  static async updateGoogleTokens(email: string, googleToken: string, googleRefreshToken?: string | null) {
+  static async updateGoogleTokens(
+    email: string,
+    googleToken: string,
+    googleRefreshToken?: string | null
+  ) {
     return await prisma.user.update({
       where: { email },
       data: {
         googleToken,
-        googleRefreshToken: googleRefreshToken || null
-      }
+        googleRefreshToken: googleRefreshToken || null,
+      },
     });
   }
-  
+
   static async create(userData: {
     id?: string;
     linkedinId?: string;
@@ -99,11 +106,14 @@ export class UserModel {
     });
   }
 
-  static async updateResume(userId: string, resumeData: {
-    resumeText: string;
-    resumeFilename: string;
-    resumeDocId?: string;
-  }) {
+  static async updateResume(
+    userId: string,
+    resumeData: {
+      resumeText: string;
+      resumeFilename: string;
+      resumeDocId?: string;
+    }
+  ) {
     return await prisma.user.update({
       where: { id: userId },
       data: {
@@ -144,17 +154,33 @@ export class UserModel {
         automationEnabled: true,
         resumeText: { not: null },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
-  static async updateAutomationSettings(userId: string, settings: {
-    automationEnabled?: boolean;
-    telegramChatId?: string;
-    preferredKeywords?: string;
-    preferredLocation?: string;
-    experienceLevel?: string;
-  }) {
+  static async updateAutomationSettings(
+    userId: string,
+    settings: {
+      automationEnabled?: boolean;
+      telegramChatId?: string;
+      preferredKeywords?: string;
+      preferredLocation?: string | null; // Allow null
+      experienceLevel?: string | null; // Allow null
+    }
+  ) {
+    const updateData: any = {};
+
+    // Handle null values properly
+    if (settings.automationEnabled !== undefined)
+      updateData.automationEnabled = settings.automationEnabled;
+    if (settings.telegramChatId !== undefined)
+      updateData.telegramChatId = settings.telegramChatId;
+    if (settings.preferredKeywords !== undefined)
+      updateData.preferredKeywords = settings.preferredKeywords;
+    if (settings.preferredLocation !== undefined)
+      updateData.preferredLocation = settings.preferredLocation || null;
+    if (settings.experienceLevel !== undefined)
+      updateData.experienceLevel = settings.experienceLevel || null;
     return await prisma.user.update({
       where: { id: userId },
       data: settings,
@@ -201,12 +227,12 @@ export class JobListingModel {
           data.postedDate = parsedDate;
         }
       } catch (error) {
-        console.log('Date parsing error, using current date');
+        console.log("Date parsing error, using current date");
       }
     }
 
     return await prisma.jobListing.upsert({
-      where: { url: jobData.url || 'no-url-' + Date.now() },
+      where: { url: jobData.url || "no-url-" + Date.now() },
       update: data,
       create: { ...data, id: jobData.id },
     });
@@ -273,7 +299,7 @@ export class JobApplicationModel {
           },
         },
       },
-      orderBy: { appliedAt: 'desc' },
+      orderBy: { appliedAt: "desc" },
       take: limit,
     });
   }
@@ -296,11 +322,11 @@ export class JobApplicationModel {
       where: { userId },
       include: { jobListing: { select: { url: true } } },
     });
-    
+
     const urls = applications
-      .map(app => app.jobListing.url)
-      .filter(url => url !== null) as string[];
-    
+      .map((app) => app.jobListing.url)
+      .filter((url) => url !== null) as string[];
+
     return new Set(urls);
   }
 }
@@ -357,7 +383,7 @@ export class ResumeModel {
         jobId: resumeData.jobId,
         originalContent: resumeData.originalContent,
         customizedContent: resumeData.customizedContent,
-        formatType: resumeData.formatType || 'professional',
+        formatType: resumeData.formatType || "professional",
         filePath: resumeData.filePath,
         customizationSuccessful: resumeData.customizationSuccessful !== false,
       },
@@ -387,7 +413,7 @@ export class ResumeModel {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 }
@@ -408,7 +434,7 @@ export class EmailDraftModel {
         hrContactId: emailData.hrContactId,
         subject: emailData.subject,
         body: emailData.body,
-        emailType: emailData.emailType || 'application',
+        emailType: emailData.emailType || "application",
       },
     });
   }
@@ -453,7 +479,7 @@ export class AutomationLogModel {
   static async findByUserId(userId: string, limit: number = 10) {
     return await prisma.automationLog.findMany({
       where: { userId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take: limit,
     });
   }
@@ -475,7 +501,7 @@ export class NotificationLogModel {
   static async findByUserId(userId: string, limit: number = 20) {
     return await prisma.notificationLog.findMany({
       where: { userId },
-      orderBy: { sentAt: 'desc' },
+      orderBy: { sentAt: "desc" },
       take: limit,
     });
   }

@@ -1,8 +1,16 @@
-// src/services/ResumeService.ts - FIXED with email lookup
+// src/services/ResumeService.ts - Smart content extraction preserving links
 import pdf from 'pdf-parse';
 import fs from 'fs';
 import path from 'path';
 import { UserModel } from '../database/db';
+
+interface ResumeSection {
+  summary?: string;
+  experience?: string;
+  skills?: string;
+  projects?: string;
+  education?: string;
+}
 
 export class ResumeService {
   private uploadsDir: string;
@@ -19,60 +27,177 @@ export class ResumeService {
   }
 
   async processResumeUpload(file: any, userId: string): Promise<{
-    filename: string;
-    resumeText: string;
-    success: boolean;
-  }> {
-    try {
-      console.log('DEBUG: Processing resume upload for user:', userId);
-      console.log('DEBUG: File details:', {
-        filename: file.filename,
-        mimetype: file.mimetype,
-        size: file.size
-      });
+  filename: string;
+  resumeText: string;
+  resumeSections: ResumeSection;
+  originalFileBuffer: Buffer;
+  success: boolean;
+}> {
+  try {
+    console.log('DEBUG: Processing resume upload for user:', userId);
+    console.log('DEBUG: File details:', {
+      filename: file.filename,
+      mimetype: file.mimetype,
+      size: file.size
+    });
 
-      let resumeText = '';
-      
-      // Extract text based on file type
-      if (file.mimetype === 'application/pdf') {
-        resumeText = await this.extractTextFromPDF(file.path);
-      } else if (file.mimetype === 'text/plain') {
-        resumeText = fs.readFileSync(file.path, 'utf8');
-      } else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        // Handle .docx files (mammoth required)
-        resumeText = await this.extractTextFromDocx(file.path);
-      } else if (file.mimetype === 'application/msword') {
-        throw new Error('Legacy .doc files not supported. Please use .docx or PDF format.');
-      } else {
-        throw new Error(`Unsupported file type: ${file.mimetype}`);
-      }
+    let resumeText = '';
+    let originalFileBuffer: Buffer;
 
-      console.log('DEBUG: Extracted text length:', resumeText.length);
-      console.log('DEBUG: First 200 chars:', resumeText.substring(0, 200));
+    // Store original file buffer for later use
+    originalFileBuffer = fs.readFileSync(file.path);
 
-      if (!resumeText || resumeText.trim().length < 50) {
-        throw new Error('Could not extract meaningful text from resume. Please ensure the file contains readable text.');
-      }
-
-      // Update user with resume text and filename
-      await UserModel.updateResume(userId, {
-        resumeText: resumeText,
-        resumeFilename: file.filename
-      });
-
-      console.log('DEBUG: Resume successfully processed and saved to database');
-
-      return {
-        filename: file.filename,
-        resumeText: resumeText,
-        success: true
-      };
-
-    } catch (error: unknown) {
-      console.error('ERROR: Resume processing failed:', error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to process resume: ${errorMessage}`);
+    // Extract text based on file type
+    if (file.mimetype === 'application/pdf') {
+      resumeText = await this.extractTextFromPDF(file.path);
+    } else if (file.mimetype === 'text/plain') {
+      resumeText = fs.readFileSync(file.path, 'utf8');
+    } else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      resumeText = await this.extractTextFromDocx(file.path);
+    } else if (file.mimetype === 'application/msword') {
+      throw new Error('Legacy .doc files not supported. Please use .docx or PDF format.');
+    } else {
+      throw new Error(`Unsupported file type: ${file.mimetype}`);
     }
+
+    console.log('DEBUG: Extracted text length:', resumeText.length);
+
+    if (!resumeText || resumeText.trim().length < 50) {
+      throw new Error('Could not extract meaningful text from resume. Please ensure the file contains readable text.');
+    }
+
+    // Extract sections from resume text
+    const resumeSections = this.extractResumeSections(resumeText);
+
+    // Update user with resume data including sections and original file
+    await UserModel.updateResume(userId, {
+      resumeText: resumeText,
+      resumeFilename: file.filename,
+      resumeSections: JSON.stringify(resumeSections), // store as JSON string
+      originalFileBuffer: originalFileBuffer
+    });
+
+    console.log('DEBUG: Resume successfully processed and sections extracted');
+
+    return {
+      filename: file.filename,
+      resumeText: resumeText,
+      resumeSections: resumeSections,
+      originalFileBuffer: originalFileBuffer,
+      success: true
+    };
+
+  } catch (error: unknown) {
+    console.error('ERROR: Resume processing failed:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to process resume: ${errorMessage}`);
+  }
+}
+
+
+  // Extract structured sections from resume text
+  private extractResumeSections(resumeText: string): ResumeSection {
+    const text = resumeText.toLowerCase();
+    const sections: ResumeSection = {};
+
+    // Define section patterns
+    const patterns = {
+      summary: /(summary|profile|objective|about)/,
+      experience: /(experience|work|employment|career)/,
+      skills: /(skills|technical|technologies|competencies)/,
+      projects: /(projects|portfolio|work samples)/,
+      education: /(education|qualifications|degrees|academic)/
+    };
+
+    // Split text into lines for processing
+    const lines = resumeText.split('\n');
+    let currentSection = '';
+    let sectionContent: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      const lowercaseLine = line.toLowerCase();
+
+      // Check if this line is a section header
+      let foundSection = '';
+      for (const [sectionName, pattern] of Object.entries(patterns)) {
+        if (pattern.test(lowercaseLine) && line.length < 50) {
+          foundSection = sectionName;
+          break;
+        }
+      }
+
+      if (foundSection) {
+        // Save previous section if exists
+        if (currentSection && sectionContent.length > 0) {
+          sections[currentSection as keyof ResumeSection] = sectionContent.join('\n').trim();
+        }
+        // Start new section
+        currentSection = foundSection;
+        sectionContent = [];
+      } else if (currentSection && line.length > 0) {
+        // Add content to current section
+        sectionContent.push(line);
+      }
+    }
+
+    // Save the last section
+    if (currentSection && sectionContent.length > 0) {
+      sections[currentSection as keyof ResumeSection] = sectionContent.join('\n').trim();
+    }
+
+    return sections;
+  }
+
+  // Get resume sections for AI customization
+  async getUserResumeSections(userId: string): Promise<ResumeSection> {
+    try {
+      const user = await UserModel.findById(userId);
+      
+      if (user && user.resumeSections) {
+        return JSON.parse(user.resumeSections as string);
+      }
+      
+      // Fallback: extract sections from full text
+      const resumeText = await this.getUserResumeText(userId);
+      return this.extractResumeSections(resumeText);
+    } catch (error) {
+      console.error('Error getting resume sections:', error);
+      return {};
+    }
+  }
+
+  // Get user's original file buffer (preserves formatting and links)
+  async getUserOriginalResume(userId: string): Promise<Buffer | null> {
+    try {
+      const user = await UserModel.findById(userId);
+      return user?.originalFileBuffer || null;
+    } catch (error) {
+      console.error('Error getting original resume:', error);
+      return null;
+    }
+  }
+
+  // Create customized resume by replacing only specific sections
+  createCustomizedResumeWithSections(
+    originalText: string, 
+    customizedSections: Partial<ResumeSection>
+  ): string {
+    let customizedText = originalText;
+
+    // Replace each customized section in the original text
+    for (const [sectionName, newContent] of Object.entries(customizedSections)) {
+      if (newContent) {
+        const originalSections = this.extractResumeSections(originalText);
+        const originalContent = originalSections[sectionName as keyof ResumeSection];
+        
+        if (originalContent) {
+          customizedText = customizedText.replace(originalContent, newContent);
+        }
+      }
+    }
+
+    return customizedText;
   }
 
   private async extractTextFromPDF(filePath: string): Promise<string> {
@@ -113,7 +238,7 @@ export class ResumeService {
     }
   }
 
-  // ORIGINAL METHOD
+  // ORIGINAL METHOD - kept for compatibility
   async getUserResumeText(userId: string): Promise<string> {
     try {
       const user = await UserModel.findById(userId);
