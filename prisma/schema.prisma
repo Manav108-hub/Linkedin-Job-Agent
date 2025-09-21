@@ -1,0 +1,189 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String    @id @default(cuid())
+  linkedinId          String?   @unique @map("linkedin_id")
+  googleId            String?   @unique @map("google_id")
+  name                String
+  email               String    @unique
+  profileData         Json?     @map("profile_data")
+  resumeDocId         String?   @map("resume_doc_id")
+  resumeText          String?   @map("resume_text")
+  resumeFilename      String?   @map("resume_filename")
+  
+  // OAuth tokens
+  linkedinToken       String?   @map("linkedin_token")
+  googleToken         String?   @map("google_token")
+  googleRefreshToken  String?   @map("google_refresh_token")
+  
+  // Automation settings
+  automationEnabled   Boolean   @default(true) @map("automation_enabled")
+  telegramChatId      String?   @map("telegram_chat_id")
+  preferredKeywords   Json?     @map("preferred_keywords") // Array of strings
+  preferredLocation   String?   @default("India") @map("preferred_location")
+  experienceLevel     String?   @default("mid-level") @map("experience_level")
+  
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  jobApplications     JobApplication[]
+  resumes            Resume[]
+  emailDrafts        EmailDraft[]
+  automationLogs     AutomationLog[]
+  notificationLogs   NotificationLog[]
+  
+  @@index([linkedinId])
+  @@index([googleId])
+  @@map("users")
+}
+
+model JobListing {
+  id              String    @id @default(cuid())
+  title           String
+  company         String
+  location        String?
+  description     String?
+  url             String?   @unique
+  salaryRange     String?   @map("salary_range")
+  jobType         String?   @map("job_type") // full-time, part-time, contract
+  experienceLevel String?   @map("experience_level")
+  postedDate      DateTime? @map("posted_date")
+  scrapedAt       DateTime  @default(now()) @map("scraped_at")
+  isActive        Boolean   @default(true) @map("is_active")
+  
+  // Relations
+  jobApplications JobApplication[]
+  hrContacts     HrContact[]
+  resumes        Resume[]
+  emailDrafts    EmailDraft[]
+  
+  @@index([company])
+  @@index([postedDate])
+  @@map("job_listings")
+}
+
+model JobApplication {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  jobId            String    @map("job_id")
+  jobUrl           String?   @map("job_url") // For duplicate detection
+  status           String    // pending, applied, rejected, interview, offer
+  matchScore       Int?      @map("match_score") // AI match score 0-100
+  appliedAt        DateTime  @default(now()) @map("applied_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  notes            String?
+  resumeCustomized Boolean   @default(false) @map("resume_customized")
+  driveLink        String?   @map("drive_link") // Google Drive link
+  
+  // Relations
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobListing      JobListing @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([status])
+  @@index([userId, jobUrl])
+  @@map("job_applications")
+}
+
+model HrContact {
+  id               String    @id @default(cuid())
+  jobId            String    @map("job_id")
+  name             String?
+  email            String?
+  linkedinProfile  String?   @map("linkedin_profile")
+  title            String?   // HR Manager, Recruiter, etc.
+  company          String?
+  phone            String?
+  extractedAt      DateTime  @default(now()) @map("extracted_at")
+  
+  // Relations
+  jobListing      JobListing  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  emailDrafts     EmailDraft[]
+  
+  @@index([jobId])
+  @@map("hr_contacts")
+}
+
+model Resume {
+  id                      String    @id @default(cuid())
+  userId                  String    @map("user_id")
+  jobId                   String    @map("job_id")
+  originalContent         String    @map("original_content")
+  customizedContent       String    @map("customized_content")
+  formatType              String    @default("professional") @map("format_type") // professional, modern, creative
+  filePath                String?   @map("file_path") // Path to generated PDF/DOC
+  customizationSuccessful Boolean   @default(true) @map("customization_successful")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  
+  // Relations
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobListing  JobListing @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@map("resumes")
+}
+
+model EmailDraft {
+  id            String     @id @default(cuid())
+  userId        String     @map("user_id")
+  jobId         String     @map("job_id")
+  hrContactId   String?    @map("hr_contact_id")
+  subject       String
+  body          String
+  emailType     String     @default("application") @map("email_type") // application, follow_up, thank_you
+  createdAt     DateTime   @default(now()) @map("created_at")
+  sentAt        DateTime?  @map("sent_at")
+  
+  // Relations
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobListing JobListing  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  hrContact  HrContact?  @relation(fields: [hrContactId], references: [id], onDelete: SetNull)
+  
+  @@map("email_drafts")
+}
+
+// New automation tracking tables
+model AutomationLog {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  runDate          DateTime  @map("run_date") @db.Date
+  jobsFound        Int       @default(0) @map("jobs_found")
+  applicationsSent Int       @default(0) @map("applications_sent")
+  duplicatesSkipped Int      @default(0) @map("duplicates_skipped")
+  errorsOccurred   Int       @default(0) @map("errors_occurred")
+  executionTimeMs  Int?      @map("execution_time_ms")
+  status           String    @default("completed") // completed, failed, partial
+  errorMessage     String?   @map("error_message")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, runDate])
+  @@map("automation_logs")
+}
+
+model NotificationLog {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  notificationType String   @map("notification_type") // telegram, email, drive
+  status          String    // sent, failed, skipped
+  messageContent  String?   @map("message_content")
+  errorMessage    String?   @map("error_message")
+  sentAt          DateTime  @default(now()) @map("sent_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, notificationType])
+  @@map("notification_logs")
+}
