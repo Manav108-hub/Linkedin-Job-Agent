@@ -50,6 +50,9 @@ export const getDatabaseStats = async () => {
 
 // Database Models using Prisma
 export class UserModel {
+  static updateLinkedInToken(email: any, accessToken: string) {
+    throw new Error('Method not implemented.');
+  }
   static async updateGoogleTokens(
     email: string,
     googleToken: string,
