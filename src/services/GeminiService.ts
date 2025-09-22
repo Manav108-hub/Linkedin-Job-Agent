@@ -1,10 +1,49 @@
+// src/services/GeminiService.ts - ENHANCED with rate limiting and error handling
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
+  private lastRequestTime: number = 0;
+  private requestCount: number = 0;
+  private dailyRequestLimit: number = 45; // Leave some buffer from 50 limit
+  private requestInterval: number = 2000; // 2 seconds between requests
 
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  }
+
+  private async enforceRateLimit(): Promise<void> {
+    const now = Date.now();
+    
+    // Reset daily counter if it's a new day
+    const today = new Date().toDateString();
+    const lastRequestDate = new Date(this.lastRequestTime).toDateString();
+    
+    if (today !== lastRequestDate) {
+      this.requestCount = 0;
+    }
+
+    // Check daily limit
+    if (this.requestCount >= this.dailyRequestLimit) {
+      const resetTime = new Date();
+      resetTime.setHours(24, 0, 0, 0); // Reset at midnight
+      const hoursUntilReset = Math.ceil((resetTime.getTime() - now) / (1000 * 60 * 60));
+      
+      throw new Error(`Daily API limit reached (${this.dailyRequestLimit} requests). Reset in ${hoursUntilReset} hours.`);
+    }
+
+    // Enforce time interval between requests
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < this.requestInterval) {
+      const waitTime = this.requestInterval - timeSinceLastRequest;
+      console.log(`Rate limiting: waiting ${waitTime}ms before next request`);
+      await this.sleep(waitTime);
+    }
+
+    this.lastRequestTime = Date.now();
+    this.requestCount++;
+    
+    console.log(`Gemini API request ${this.requestCount}/${this.dailyRequestLimit} today`);
   }
 
   async customizeResume(
@@ -14,19 +53,16 @@ export class GeminiService {
     company: string
   ): Promise<string> {
     try {
-      console.log(
-        "DEBUG: Starting resume customization for:",
-        jobTitle,
-        "at",
-        company
-      );
+      console.log("DEBUG: Starting resume customization for:", jobTitle, "at", company);
+
+      // Check rate limits before making request
+      await this.enforceRateLimit();
 
       const model = this.genAI.getGenerativeModel({
         model: "gemini-1.5-flash",
       });
 
-      const prompt = `
-You are a professional resume writer. Customize this resume for a specific job application.
+      const prompt = `You are a professional resume writer. Customize this resume for a specific job application.
 
 ORIGINAL RESUME:
 ${originalResume}
@@ -48,8 +84,7 @@ CUSTOMIZATION INSTRUCTIONS:
 
 IMPORTANT: Return ONLY the customized resume content. Do not include any explanations, comments, or additional text.
 
-CUSTOMIZED RESUME:
-`;
+CUSTOMIZED RESUME:`;
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -57,15 +92,18 @@ CUSTOMIZED RESUME:
 
       console.log("DEBUG: Resume customization completed successfully");
       return customizedResume;
+      
     } catch (error: unknown) {
-      console.error("Error customizing resume with Gemini:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Error customizing resume with Gemini:", errorMessage);
 
-      // Check if it's a quota error
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      // Handle specific error types
       if (errorMessage.includes("quota") || errorMessage.includes("429")) {
         console.log("DEBUG: Quota exceeded, returning original resume");
         return originalResume; // Fallback to original resume when quota exceeded
+      } else if (errorMessage.includes("Daily API limit reached")) {
+        console.log("DEBUG: Daily limit reached, returning original resume");
+        return originalResume;
       }
 
       throw new Error("Failed to customize resume");
@@ -81,12 +119,14 @@ CUSTOMIZED RESUME:
     recommendations: string[];
   }> {
     try {
+      // Check rate limits before making request
+      await this.enforceRateLimit();
+
       const model = this.genAI.getGenerativeModel({
         model: "gemini-1.5-flash",
       });
 
-      const prompt = `
-Analyze how well this resume matches the job description and provide actionable insights.
+      const prompt = `Analyze how well this resume matches the job description and provide actionable insights.
 
 RESUME:
 ${resume}
@@ -99,8 +139,7 @@ Please analyze and respond with a JSON object containing:
 - missingSkills: Array of key skills mentioned in job but missing from resume
 - recommendations: Array of specific suggestions to improve the application
 
-Return only valid JSON, no other text or markdown formatting.
-`;
+Return only valid JSON, no other text or markdown formatting.`;
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -118,8 +157,28 @@ Return only valid JSON, no other text or markdown formatting.
       console.log("DEBUG: Parsed analysis result:", parsed);
 
       return parsed;
+      
     } catch (error: unknown) {
-      console.error("Error analyzing job match:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Error analyzing job match:", errorMessage);
+      
+      // Return default values for various error types
+      if (errorMessage.includes("quota") || errorMessage.includes("429")) {
+        console.log("DEBUG: Quota exceeded for job analysis, using fallback score");
+        return {
+          matchScore: 60, // Conservative fallback score
+          missingSkills: ["Unable to analyze due to API limits"],
+          recommendations: ["Resume analysis temporarily unavailable - manual review recommended"],
+        };
+      } else if (errorMessage.includes("Daily API limit reached")) {
+        console.log("DEBUG: Daily limit reached for job analysis");
+        return {
+          matchScore: 65,
+          missingSkills: ["Daily API limit reached"],
+          recommendations: ["Job analysis unavailable today - check back tomorrow"],
+        };
+      }
+      
       return {
         matchScore: 50,
         missingSkills: [],
@@ -138,12 +197,14 @@ Return only valid JSON, no other text or markdown formatting.
     body: string;
   }> {
     try {
+      // Check rate limits before making request
+      await this.enforceRateLimit();
+
       const model = this.genAI.getGenerativeModel({
         model: "gemini-1.5-flash",
       });
 
-      const prompt = `
-Generate a professional follow-up email for a job application.
+      const prompt = `Generate a professional follow-up email for a job application.
 
 JOB TITLE: ${jobTitle}
 COMPANY: ${company}
@@ -162,8 +223,7 @@ Return a JSON object with:
 - subject: Email subject line
 - body: Email body content
 
-Return only valid JSON, no other text or markdown formatting.
-`;
+Return only valid JSON, no other text or markdown formatting.`;
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -176,12 +236,39 @@ Return only valid JSON, no other text or markdown formatting.
         .trim();
 
       return JSON.parse(responseText);
+      
     } catch (error: unknown) {
-      console.error("Error generating follow-up email:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Error generating follow-up email:", errorMessage);
+      
+      // Fallback email template
       return {
         subject: `Follow-up on ${jobTitle} Application`,
         body: `Dear Hiring Manager,\n\nI hope this email finds you well. I recently applied for the ${jobTitle} position at ${company} and wanted to follow up on my application.\n\nI am very excited about the opportunity to contribute to your team and believe my skills align well with the role requirements.\n\nThank you for your time and consideration. I look forward to hearing from you.\n\nBest regards,\n${applicantName}`,
       };
     }
+  }
+
+  // Helper method for delays
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Get current usage stats
+  getCurrentUsage(): {
+    requestCount: number;
+    dailyLimit: number;
+    remainingRequests: number;
+    resetTime: string;
+  } {
+    const resetTime = new Date();
+    resetTime.setHours(24, 0, 0, 0);
+    
+    return {
+      requestCount: this.requestCount,
+      dailyLimit: this.dailyRequestLimit,
+      remainingRequests: Math.max(0, this.dailyRequestLimit - this.requestCount),
+      resetTime: resetTime.toISOString()
+    };
   }
 }

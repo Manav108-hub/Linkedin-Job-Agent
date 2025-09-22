@@ -1,5 +1,6 @@
-// src/services/GoogleDriveService.ts - Fixed version
+// src/services/GoogleDriveService.ts - FIXED MIME Type Issue
 import { google } from 'googleapis';
+import { Readable } from 'stream';
 
 export class GoogleDriveService {
   private drive;
@@ -46,25 +47,28 @@ export class GoogleDriveService {
       // Create company-specific subfolder
       const companyFolderId = await this.getOrCreateCompanyFolder(company, mainFolderId);
       
-      // Create the file
+      // Format content for better readability
+      const formattedContent = this.formatResumeContent(content);
+      
+      // FIXED: Create proper stream for content upload
+      const contentStream = Readable.from([formattedContent]);
+      
+      // Create the file metadata
       const fileMetadata = {
         name: fileName,
         parents: [companyFolderId],
         description: `Resume for ${jobTitle} at ${company} - Generated on ${new Date().toLocaleDateString()}`
       };
       
-      // Format content for better readability
-      const formattedContent = this.formatResumeContent(content);
-      
-      // Save as Google Doc for better formatting
-      const docMedia = {
-        mimeType: 'application/vnd.google-apps.document',
-        body: formattedContent
+      // FIXED: Use text/plain MIME type and proper stream upload
+      const media = {
+        mimeType: 'text/plain',
+        body: contentStream
       };
       
       const file = await this.drive.files.create({
         requestBody: fileMetadata,
-        media: docMedia,
+        media: media,
         fields: 'id, name, webViewLink, webContentLink'
       });
       
@@ -102,6 +106,63 @@ export class GoogleDriveService {
         }
       }
       
+      return null;
+    }
+  }
+
+  // Alternative method to save as Google Doc (if text/plain fails)
+  async saveResumeAsGoogleDoc(
+    content: string, 
+    fileName: string, 
+    jobTitle: string, 
+    company: string
+  ): Promise<string | null> {
+    try {
+      console.log(`📝 Saving resume as Google Doc: ${fileName}`);
+      
+      const mainFolderId = await this.getOrCreateJobFolder();
+      const companyFolderId = await this.getOrCreateCompanyFolder(company, mainFolderId);
+      
+      const formattedContent = this.formatResumeContent(content);
+      
+      // Create as Google Doc
+      const fileMetadata = {
+        name: fileName,
+        parents: [companyFolderId],
+        mimeType: 'application/vnd.google-apps.document'
+      };
+      
+      // Import as Google Doc
+      const file = await this.drive.files.create({
+        requestBody: fileMetadata,
+        media: {
+          mimeType: 'text/plain',
+          body: formattedContent
+        },
+        fields: 'id, name, webViewLink'
+      });
+      
+      if (!file.data.id) {
+        throw new Error('Failed to create Google Doc');
+      }
+      
+      // Make shareable
+      await this.drive.permissions.create({
+        fileId: file.data.id,
+        requestBody: {
+          role: 'reader',
+          type: 'anyone'
+        }
+      });
+      
+      const docLink = `https://docs.google.com/document/d/${file.data.id}/edit`;
+      console.log(`✅ Resume saved as Google Doc: ${docLink}`);
+      
+      return docLink;
+      
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ Failed to save as Google Doc:', errorMessage);
       return null;
     }
   }
@@ -269,6 +330,6 @@ export class GoogleDriveService {
     const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const type = customized ? 'AI_Customized' : 'Original';
     
-    return `Resume_${sanitize(company)}_${sanitize(jobTitle)}_${type}_${date}`; // No file extension for Google Docs
+    return `Resume_${sanitize(company)}_${sanitize(jobTitle)}_${type}_${date}.txt`;
   }
 }

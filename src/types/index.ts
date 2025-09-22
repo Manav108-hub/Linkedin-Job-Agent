@@ -37,6 +37,19 @@ export interface UserSession {
   experienceLevel?: string;
 }
 
+interface StudentInfo {
+  name: string;
+  email: string;
+  phone: string;
+  coverLetter: string;
+  experience: string;
+  relocate: 'Yes' | 'No';
+  noticePeriod: string;
+  expectedSalary: string;
+  startDate: string;
+  resumePath?: string; // Google Drive link
+}
+
 // Prisma User Model (matches Prisma schema)
 export interface User {
   id: string;
