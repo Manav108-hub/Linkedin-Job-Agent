@@ -1,4 +1,4 @@
-// src/services/LinkedInService.ts - Production version with anti-bot resistance
+// src/services/LinkedInService.ts - Complete version with Real Job APIs
 import puppeteer, { Browser, Page } from 'puppeteer';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -123,27 +123,349 @@ export class LinkedInService {
     }
   }
 
+  // ========================================
+  // ENHANCED JOB SEARCH WITH REAL APIs
+  // ========================================
+
   async searchJobs(keywords: string[], location: string, limit: number = 10): Promise<any[]> {
-    const searchQuery = keywords.join(' ');
+    console.log('🔍 Searching jobs with enhanced API integration...');
+    const allJobs: any[] = [];
+
+    // Priority 1: Try Real Job APIs (Most Reliable)
+    console.log('🌐 Step 1: Trying real job APIs...');
     
-    // Always try HTTP first since it's more reliable
-    console.log('🌐 Starting with HTTP job search...');
-    const httpJobs = await this.searchJobsViaHTTP(keywords, location, limit);
-    
-    if (httpJobs.length > 0) {
-      return httpJobs;
+    // 1. JSearch API (RapidAPI) - 150 free requests/month
+    const jsearchJobs = await this.searchJobsWithJSearch(keywords, location, 5);
+    if (jsearchJobs.length > 0) {
+      console.log(`✅ JSearch found ${jsearchJobs.length} jobs`);
+      allJobs.push(...jsearchJobs);
     }
 
-    // Try browser as fallback only if HTTP fails
-    if (!this.useHttpOnly && this.browser && this.page) {
-      console.log('🔄 HTTP failed, trying browser search...');
-      return await this.searchJobsViaBrowser(keywords, location, limit);
+    // 2. Reed API for UK jobs - 100 free requests/month  
+    if (location.toLowerCase().includes('uk') || location.toLowerCase().includes('england') || location.toLowerCase().includes('london')) {
+      const reedJobs = await this.searchJobsWithReed(keywords, location, 3);
+      if (reedJobs.length > 0) {
+        console.log(`✅ Reed found ${reedJobs.length} UK jobs`);
+        allJobs.push(...reedJobs);
+      }
     }
 
-    // Final fallback: realistic mock jobs
-    console.log('🎭 Using mock jobs for testing/demonstration');
+    // 3. Remotive for remote jobs - Unlimited free
+    const remotiveJobs = await this.searchJobsWithRemotive(keywords, 3);
+    if (remotiveJobs.length > 0) {
+      console.log(`✅ Remotive found ${remotiveJobs.length} remote jobs`);
+      allJobs.push(...remotiveJobs);
+    }
+
+    // If we got good results from APIs, return them
+    if (allJobs.length >= 3) {
+      console.log(`🎉 Success! Found ${allJobs.length} REAL jobs from APIs`);
+      return allJobs.slice(0, limit);
+    }
+
+    // Priority 2: Fallback to HTTP scraping if APIs didn't provide enough jobs
+    console.log('🔄 Step 2: APIs provided limited results, trying HTTP scraping...');
+    const httpJobs = await this.searchJobsViaHTTP(keywords, location, Math.max(limit - allJobs.length, 3));
+    allJobs.push(...httpJobs);
+
+    if (allJobs.length >= 2) {
+      console.log(`✅ Combined APIs + HTTP: ${allJobs.length} jobs found`);
+      return allJobs.slice(0, limit);
+    }
+
+    // Priority 3: Browser scraping as additional fallback
+    if (!this.useHttpOnly && this.browser && this.page && allJobs.length < 2) {
+      console.log('🔄 Step 3: Trying browser scraping for additional jobs...');
+      const browserJobs = await this.searchJobsViaBrowser(keywords, location, 3);
+      allJobs.push(...browserJobs);
+    }
+
+    if (allJobs.length > 0) {
+      console.log(`✅ Total jobs found: ${allJobs.length}`);
+      return allJobs.slice(0, limit);
+    }
+
+    // Final fallback: Demo jobs for testing
+    console.log('📝 All methods failed, using demo jobs for testing');
     return this.generateRealisticMockJobs(keywords, location, Math.min(limit, 5));
   }
+
+  // ========================================
+  // REAL JOB API METHODS
+  // ========================================
+
+  private async searchJobsWithJSearch(keywords: string[], location: string, limit: number): Promise<any[]> {
+    try {
+      if (!process.env.RAPIDAPI_KEY) {
+        console.log('⚠️ JSearch API key not configured, skipping...');
+        return [];
+      }
+
+      console.log('🔍 JSearch API: Searching for', keywords.join(' '), 'in', location);
+
+      const response = await axios.get('https://jsearch.p.rapidapi.com/search', {
+        params: {
+          query: `${keywords.join(' ')} ${location}`.trim(),
+          page: '1',
+          num_pages: '1',
+          date_posted: 'all'
+        },
+        headers: {
+          'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'jsearch.p.rapidapi.com'
+        },
+        timeout: 15000
+      });
+
+      if (!response.data?.data || !Array.isArray(response.data.data)) {
+        console.log('JSearch API returned no valid data');
+        return [];
+      }
+
+      const jobs = response.data.data.slice(0, limit).map((job: any) => ({
+        id: `jsearch_${job.job_id || Date.now()}`,
+        title: job.job_title || 'Title not available',
+        company: job.employer_name || 'Company not available',
+        location: job.job_city && job.job_country ? 
+          `${job.job_city}, ${job.job_country}` : 
+          job.job_country || location,
+        url: job.job_apply_link || job.job_url || '',
+        description: job.job_description || 'Description not available',
+        salary: job.job_min_salary && job.job_max_salary ? 
+          `$${job.job_min_salary} - $${job.job_max_salary}` : 
+          job.job_salary || 'Salary not specified',
+        jobType: job.job_employment_type || 'Full-time',
+        postedDate: job.job_posted_at_datetime_utc ? 
+          new Date(job.job_posted_at_datetime_utc) : 
+          new Date(),
+        source: 'JSearch',
+        apiSource: true
+      }));
+
+      console.log(`✅ JSearch API returned ${jobs.length} jobs`);
+      return jobs;
+
+    } catch (error: any) {
+      console.log('❌ JSearch API failed:', error.response?.data?.message || error.message);
+      return [];
+    }
+  }
+
+  private async searchJobsWithReed(keywords: string[], location: string, limit: number): Promise<any[]> {
+    try {
+      if (!process.env.REED_API_KEY) {
+        console.log('⚠️ Reed API key not configured, skipping...');
+        return [];
+      }
+
+      console.log('🔍 Reed API: Searching for', keywords.join(' '), 'in', location);
+
+      const response = await axios.get('https://www.reed.co.uk/api/1.0/search', {
+        params: {
+          keywords: keywords.join(' '),
+          locationName: location,
+          resultsToTake: limit,
+          resultsToSkip: 0
+        },
+        headers: {
+          'Authorization': `Basic ${Buffer.from(process.env.REED_API_KEY + ':').toString('base64')}`
+        },
+        timeout: 15000
+      });
+
+      if (!response.data?.results || !Array.isArray(response.data.results)) {
+        console.log('Reed API returned no valid results');
+        return [];
+      }
+
+      const jobs = response.data.results.map((job: any) => ({
+        id: `reed_${job.jobId || Date.now()}`,
+        title: job.jobTitle || 'Title not available',
+        company: job.employerName || 'Company not available',
+        location: job.locationName || location,
+        url: job.jobUrl || '',
+        description: job.jobDescription || 'Description not available',
+        salary: job.minimumSalary && job.maximumSalary ? 
+          `£${job.minimumSalary} - £${job.maximumSalary}` :
+          job.minimumSalary ? `£${job.minimumSalary}+` : 'Competitive',
+        jobType: job.jobType || 'Full-time',
+        contractType: job.contractType,
+        postedDate: job.date ? new Date(job.date) : new Date(),
+        source: 'Reed',
+        apiSource: true,
+        // Reed-specific data for detailed view
+        reedJobId: job.jobId,
+        applications: job.applications
+      }));
+
+      console.log(`✅ Reed API returned ${jobs.length} jobs`);
+      return jobs;
+
+    } catch (error: any) {
+      console.log('❌ Reed API failed:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  private async searchJobsWithRemotive(keywords: string[], limit: number): Promise<any[]> {
+    try {
+      console.log('🔍 Remotive API: Searching for remote', keywords.join(' '), 'jobs');
+
+      const response = await axios.get('https://remotive.io/api/remote-jobs', {
+        params: {
+          limit: limit * 2, // Get more to filter better
+          search: keywords.join(' ')
+        },
+        timeout: 15000
+      });
+
+      if (!response.data?.jobs || !Array.isArray(response.data.jobs)) {
+        console.log('Remotive API returned no valid jobs');
+        return [];
+      }
+
+      // Filter and map jobs
+      const jobs = response.data.jobs
+        .filter((job: any) => {
+          // Basic filtering for relevant jobs
+          const titleMatch = keywords.some(keyword => 
+            job.title?.toLowerCase().includes(keyword.toLowerCase())
+          );
+          const descMatch = keywords.some(keyword => 
+            job.description?.toLowerCase().includes(keyword.toLowerCase())
+          );
+          return titleMatch || descMatch;
+        })
+        .slice(0, limit)
+        .map((job: any) => ({
+          id: `remotive_${job.id || Date.now()}`,
+          title: job.title || 'Title not available',
+          company: job.company_name || 'Company not available',
+          location: 'Remote',
+          url: job.url || '',
+          description: job.description || 'Description not available',
+          salary: job.salary || 'Salary not specified',
+          jobType: job.job_type || 'Full-time',
+          category: job.category,
+          postedDate: job.publication_date ? new Date(job.publication_date) : new Date(),
+          source: 'Remotive',
+          apiSource: true,
+          tags: job.tags || []
+        }));
+
+      console.log(`✅ Remotive API returned ${jobs.length} remote jobs`);
+      return jobs;
+
+    } catch (error: any) {
+      console.log('❌ Remotive API failed:', error.message);
+      return [];
+    }
+  }
+
+  // ========================================
+  // ENHANCED JOB DETAILS METHODS
+  // ========================================
+
+  async getDetailedJobInfo(jobUrl: string): Promise<any | null> {
+    // Check if this is a Reed job and get detailed info
+    const reedJobIdMatch = jobUrl.match(/reed\.co\.uk.*\/jobs\/(\d+)/);
+    if (reedJobIdMatch) {
+      const jobId = reedJobIdMatch[1];
+      console.log(`🔍 Fetching Reed job details for ID: ${jobId}`);
+      return await this.getJobDetailsFromReed(jobId);
+    }
+
+    // For other job sources, try basic scraping
+    try {
+      if (!this.useHttpOnly && this.page) {
+        await this.page.goto(jobUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+        
+        const jobInfo = await this.page.evaluate(() => {
+          const title = document.querySelector('h1, .job-title, .job-details-jobs-unified-top-card__job-title')?.textContent?.trim();
+          const company = document.querySelector('.job-details-jobs-unified-top-card__company-name, .company-name')?.textContent?.trim();
+          const location = document.querySelector('.job-details-jobs-unified-top-card__bullet, .job-location')?.textContent?.trim();
+          const description = document.querySelector('.job-description, .description__text')?.textContent?.trim();
+          
+          return {
+            title: title || 'Job Title Not Found',
+            company: company || 'Company Not Found', 
+            location: location || 'Location Not Found',
+            description: description || 'Description Not Available',
+            source: 'Scraped'
+          };
+        });
+        
+        return jobInfo;
+      }
+    } catch (error) {
+      console.log('Error scraping job details:', error);
+    }
+    
+    return null;
+  }
+
+  private async getJobDetailsFromReed(jobId: string): Promise<any | null> {
+    try {
+      if (!process.env.REED_API_KEY) {
+        console.log('⚠️ Reed API key not configured for job details');
+        return null;
+      }
+
+      const response = await axios.get(`https://www.reed.co.uk/api/1.0/jobs/${jobId}`, {
+        headers: {
+          'Authorization': `Basic ${Buffer.from(process.env.REED_API_KEY + ':').toString('base64')}`
+        },
+        timeout: 10000
+      });
+
+      const job = response.data;
+      
+      // Reed returns a blank object {} if job not found
+      if (!job || Object.keys(job).length === 0 || !job.jobTitle) {
+        console.log(`❌ No job found with Reed ID: ${jobId}`);
+        return null;
+      }
+
+      console.log(`✅ Retrieved detailed Reed job: ${job.jobTitle} at ${job.employerName}`);
+
+      return {
+        id: `reed_${job.jobId}`,
+        title: job.jobTitle,
+        company: job.employerName,
+        location: job.locationName,
+        url: job.jobUrl,
+        description: job.jobDescription,
+        fullDescription: job.jobDescription,
+        salary: job.minimumSalary && job.maximumSalary ? 
+          `£${job.minimumSalary} - £${job.maximumSalary}` : 
+          job.minimumSalary ? `£${job.minimumSalary}+` : 'Competitive',
+        jobType: job.jobType || 'Full-time',
+        contractType: job.contractType,
+        postedDate: new Date(job.date),
+        expiryDate: job.expiryDate ? new Date(job.expiryDate) : null,
+        applications: job.applications,
+        source: 'Reed',
+        apiSource: true,
+        // Additional Reed-specific fields
+        employerId: job.employerId,
+        employerProfileId: job.employerProfileId,
+        employerProfileName: job.employerProfileName,
+        currency: job.currency || 'GBP'
+      };
+
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        console.log(`❌ Reed job ID ${jobId} not found (404)`);
+        return null;
+      }
+      console.log('❌ Reed job details API failed:', error.response?.data || error.message);
+      return null;
+    }
+  }
+
+  // ========================================
+  // EXISTING METHODS (HTTP & BROWSER SCRAPING)
+  // ========================================
 
   private async searchJobsViaHTTP(keywords: string[], location: string, limit: number): Promise<any[]> {
     try {
@@ -189,13 +511,15 @@ export class LinkedInService {
             const company = parts[1] || 'Company Name';
 
             jobs.push({
-              id: `job_${jobId}`,
+              id: `linkedin_scraped_${jobId}`,
               title: title.trim(),
               company: company.trim(),
               location: location,
               url: href.startsWith('http') ? href : `https://www.linkedin.com${href}`,
               description: '',
-              postedDate: new Date()
+              postedDate: new Date(),
+              source: 'LinkedIn (Google Search)',
+              apiSource: false
             });
           }
         } catch (error) {
@@ -208,7 +532,7 @@ export class LinkedInService {
         return await this.searchIndeedJobs(keywords, location, limit);
       }
 
-      console.log(`✅ Found ${jobs.length} jobs via Google search`);
+      console.log(`✅ Found ${jobs.length} jobs via Google/HTTP search`);
       return jobs;
 
     } catch (error) {
@@ -257,7 +581,9 @@ export class LinkedInService {
               location: jobLocation,
               url: relativeUrl.startsWith('http') ? relativeUrl : `https://www.indeed.com${relativeUrl}`,
               description: '',
-              postedDate: new Date()
+              postedDate: new Date(),
+              source: 'Indeed',
+              apiSource: false
             });
           }
         } catch (error) {
@@ -296,13 +622,15 @@ export class LinkedInService {
 
             if (titleElement && companyElement && linkElement) {
               jobList.push({
-                id: `browser_${Date.now()}_${i}`,
+                id: `linkedin_browser_${Date.now()}_${i}`,
                 title: titleElement.textContent?.trim() || '',
                 company: companyElement.textContent?.trim() || '',
                 location: card.querySelector('.job-search-card__location')?.textContent?.trim() || '',
                 url: (linkElement as HTMLAnchorElement).href || '',
                 description: '',
-                postedDate: new Date()
+                postedDate: new Date(),
+                source: 'LinkedIn (Browser)',
+                apiSource: false
               });
             }
           } catch (error) {
@@ -313,7 +641,7 @@ export class LinkedInService {
         return jobList;
       }, limit);
 
-      console.log(`✅ Found ${jobs.length} jobs via browser`);
+      console.log(`✅ Found ${jobs.length} jobs via browser scraping`);
       return jobs;
 
     } catch (error) {
@@ -352,7 +680,9 @@ export class LinkedInService {
         location,
         url: `https://linkedin.com/jobs/view/demo-${Date.now()}-${i}`,
         description: `We are looking for a skilled ${keywords.join(', ')} developer to join our ${company} team. This is a ${location}-based role with competitive compensation and benefits.`,
-        postedDate: new Date()
+        postedDate: new Date(),
+        source: 'Demo',
+        apiSource: false
       });
     }
 
@@ -360,7 +690,106 @@ export class LinkedInService {
     return jobs;
   }
 
-  
+  // ========================================
+  // ENHANCED APPLICATION METHODS  
+  // ========================================
+
+  async getJobDescriptionAndApply(jobUrl: string, resumeContent: string, userInfo?: any): Promise<{
+    description: string;
+    applied: boolean;
+    applicationMethod: string;
+    formFilled?: boolean;
+    readyForSubmission?: boolean;
+    jobDetails?: any;
+  }> {
+    
+    // Handle demo jobs
+    if (jobUrl.includes('demo-')) {
+      return {
+        description: 'Demo job description for testing purposes',
+        applied: true,
+        applicationMethod: 'demo_application'
+      };
+    }
+
+    // Check if this is a Reed job URL and get detailed info
+    const reedJobIdMatch = jobUrl.match(/reed\.co\.uk.*\/jobs\/(\d+)/);
+    if (reedJobIdMatch) {
+      const jobId = reedJobIdMatch[1];
+      console.log(`🔍 Detected Reed job, fetching details for ID: ${jobId}`);
+      
+      const jobDetails = await this.getJobDetailsFromReed(jobId);
+      if (jobDetails) {
+        console.log(`✅ Retrieved Reed job details: ${jobDetails.title} at ${jobDetails.company}`);
+        
+        return {
+          description: jobDetails.fullDescription || jobDetails.description,
+          applied: false, // Reed jobs require external application
+          applicationMethod: 'external_reed_application',
+          jobDetails: jobDetails
+        };
+      } else {
+        console.log(`❌ Could not fetch Reed job details for ID: ${jobId}`);
+      }
+    }
+
+    // Handle other job sources with existing logic
+    try {
+      if (!this.useHttpOnly && this.page) {
+        await this.page.goto(jobUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        
+        // Extract description
+        const description = await this.page.$eval(
+          '.description__text, .show-more-less-html__markup, .job-description', 
+          el => el.textContent?.trim() || 'Job description not found'
+        ).catch(() => 'Job description not available');
+
+        // Look for apply button and try to click it
+        const applyButton = await this.page.$('.jobs-s-apply button, .apply-button, [class*="apply"]');
+        
+        if (applyButton) {
+          console.log('🎯 Apply button found, clicking...');
+          await applyButton.click();
+          await this.sleep(3000);
+          
+          // Check if form appeared
+          const hasForm = await this.page.$('form, input[type="email"], textarea') !== null;
+          
+          if (hasForm && userInfo) {
+            console.log('📝 Application form detected, filling automatically...');
+            const formResult = await this.fillApplicationForm(this.page, userInfo, userInfo.resumePath);
+            
+            return {
+              description,
+              applied: false, // Not submitted yet
+              applicationMethod: 'form_filled_awaiting_submission',
+              formFilled: formResult.formFilled,
+              readyForSubmission: formResult.readyForSubmission
+            };
+          } else {
+            return {
+              description,
+              applied: true,
+              applicationMethod: 'direct_application_completed'
+            };
+          }
+        }
+      }
+      
+      return {
+        description: 'Could not access application form',
+        applied: false,
+        applicationMethod: 'access_failed'
+      };
+      
+    } catch (error) {
+      return {
+        description: 'Error processing application',
+        applied: false,
+        applicationMethod: 'error'
+      };
+    }
+  }
 
   async getJobDescription(jobUrl: string): Promise<string> {
     const result = await this.getJobDescriptionAndApply(jobUrl, '');
@@ -401,269 +830,187 @@ export class LinkedInService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // Add to your existing LinkedInService.ts - just the new methods
+  // ========================================
+  // APPLICATION FORM FILLING METHODS
+  // ========================================
 
-async fillApplicationForm(page: Page, userInfo: any, resumePath?: string): Promise<{
-  formFilled: boolean;
-  readyForSubmission: boolean;
-  submitButtonFound: boolean;
-}> {
-  try {
-    console.log('🔍 Analyzing application form...');
-    
-    // Fill name fields
-    await this.fillFieldSafely(page, 'input[name*="name"], input[placeholder*="name"]', userInfo.name);
-    
-    // Fill email fields  
-    await this.fillFieldSafely(page, 'input[type="email"], input[name*="email"]', userInfo.email);
-    
-    // Fill phone fields
-    await this.fillFieldSafely(page, 'input[type="tel"], input[name*="phone"]', userInfo.phone);
-    
-    // Upload resume if file input exists
-    if (resumePath) {
-      await this.uploadResumeSafely(page, resumePath);
-    }
-    
-    // Fill cover letter/message
-    await this.fillTextAreaSafely(page, userInfo.coverLetter);
-    
-    // Answer common questions
-    await this.answerCommonQuestions(page, userInfo);
-    
-    // Find and highlight submit button
-    const submitButton = await this.findAndHighlightSubmitButton(page);
-    
-    return {
-      formFilled: true,
-      readyForSubmission: true,
-      submitButtonFound: !!submitButton
-    };
-    
-  } catch (error) {
-    console.log('Form filling error:', error);
-    return {
-      formFilled: false,
-      readyForSubmission: false,
-      submitButtonFound: false
-    };
-  }
-}
-
-private async fillFieldSafely(page: Page, selector: string, value: string): Promise<void> {
-  try {
-    const field = await page.$(selector);
-    if (field && value) {
-      await field.click();
-      await field.type(value, { delay: 50 });
-      console.log(`✅ Filled field: ${selector}`);
-    }
-  } catch (error) {
-    console.log(`⚠️ Could not fill field ${selector}:`, error.message);
-  }
-}
-
-private async uploadResumeSafely(page: Page, resumePath: string): Promise<void> {
-  try {
-    const fileInput = await page.$('input[type="file"]');
-    if (fileInput && resumePath) {
-      // Download from Google Drive first
-      const localPath = await this.downloadResumeFromDrive(resumePath);
-      await fileInput.uploadFile(localPath);
-      console.log('✅ Resume uploaded successfully');
+  async fillApplicationForm(page: Page, userInfo: any, resumePath?: string): Promise<{
+    formFilled: boolean;
+    readyForSubmission: boolean;
+    submitButtonFound: boolean;
+  }> {
+    try {
+      console.log('🔍 Analyzing application form...');
       
-      // Cleanup local file
-      require('fs').unlinkSync(localPath);
-    }
-  } catch (error) {
-    console.log('⚠️ Resume upload failed:', error.message);
-  }
-}
-  downloadResumeFromDrive(resumePath: string) {
-    throw new Error('Method not implemented.');
-  }
-
-private async fillTextAreaSafely(page: Page, coverLetter: string): Promise<void> {
-  try {
-    const textAreas = await page.$$('textarea');
-    for (const textArea of textAreas) {
-      const placeholder = await textArea.evaluate(el => el.placeholder?.toLowerCase() || '');
+      // Fill name fields
+      await this.fillFieldSafely(page, 'input[name*="name"], input[placeholder*="name"]', userInfo.name);
       
-      if (placeholder.includes('cover') || placeholder.includes('message') || placeholder.includes('why')) {
-        await textArea.click();
-        await textArea.type(coverLetter, { delay: 30 });
-        console.log('✅ Cover letter filled');
-        break;
+      // Fill email fields  
+      await this.fillFieldSafely(page, 'input[type="email"], input[name*="email"]', userInfo.email);
+      
+      // Fill phone fields
+      await this.fillFieldSafely(page, 'input[type="tel"], input[name*="phone"]', userInfo.phone);
+      
+      // Upload resume if file input exists
+      if (resumePath) {
+        await this.uploadResumeSafely(page, resumePath);
       }
+      
+      // Fill cover letter/message
+      await this.fillTextAreaSafely(page, userInfo.coverLetter);
+      
+      // Answer common questions
+      await this.answerCommonQuestions(page, userInfo);
+      
+      // Find and highlight submit button
+      const submitButton = await this.findAndHighlightSubmitButton(page);
+      
+      return {
+        formFilled: true,
+        readyForSubmission: true,
+        submitButtonFound: !!submitButton
+      };
+      
+    } catch (error) {
+      console.log('Form filling error:', error);
+      return {
+        formFilled: false,
+        readyForSubmission: false,
+        submitButtonFound: false
+      };
     }
-  } catch (error) {
-    console.log('⚠️ Cover letter filling failed:', error.message);
   }
-}
 
-private async answerCommonQuestions(page: Page, userInfo: any): Promise<void> {
-  const commonAnswers = {
-    'years of experience': userInfo.experience || '2',
-    'willing to relocate': userInfo.relocate || 'Yes',
-    'authorization to work': 'Yes',
-    'notice period': userInfo.noticePeriod || '30 days',
-    'expected salary': userInfo.expectedSalary || 'Competitive',
-    'start date': userInfo.startDate || 'Immediately available'
-  };
+  private async fillFieldSafely(page: Page, selector: string, value: string): Promise<void> {
+    try {
+      const field = await page.$(selector);
+      if (field && value) {
+        await field.click();
+        await field.type(value, { delay: 50 });
+        console.log(`✅ Filled field: ${selector}`);
+      }
+    } catch (error) {
+      console.log(`⚠️ Could not fill field ${selector}:`, error);
+    }
+  }
 
-  try {
-    // Handle text inputs
-    const inputs = await page.$$('input[type="text"], input[type="number"]');
-    
-    for (const input of inputs) {
-      const label = await input.evaluate(el => {
-        const labelEl = el.closest('.form-element, .field')?.querySelector('label');
-        return labelEl?.textContent?.toLowerCase() || '';
-      });
+  private async uploadResumeSafely(page: Page, resumePath: string): Promise<void> {
+    try {
+      const fileInput = await page.$('input[type="file"]');
+      if (fileInput && resumePath) {
+        // For now, skip file upload as we need Google Drive integration
+        // This will be implemented when Google Drive service is available
+        console.log('⚠️ Resume upload skipped - Google Drive integration needed');
+      }
+    } catch (error) {
+      console.log('⚠️ Resume upload failed:', error);
+    }
+  }
 
-      for (const [keyword, answer] of Object.entries(commonAnswers)) {
-        if (label.includes(keyword)) {
-          await input.click();
-          await input.type(answer, { delay: 50 });
-          console.log(`✅ Answered: ${keyword} = ${answer}`);
+  private async fillTextAreaSafely(page: Page, coverLetter: string): Promise<void> {
+    try {
+      const textAreas = await page.$('textarea');
+      for (const textArea of textAreas) {
+        const placeholder = await textArea.evaluate(el => el.placeholder?.toLowerCase() || '');
+        
+        if (placeholder.includes('cover') || placeholder.includes('message') || placeholder.includes('why')) {
+          await textArea.click();
+          await textArea.type(coverLetter, { delay: 30 });
+          console.log('✅ Cover letter filled');
           break;
         }
       }
+    } catch (error) {
+      console.log('⚠️ Cover letter filling failed:', error);
     }
+  }
 
-    // Handle dropdowns
-    const selects = await page.$$('select');
-    for (const select of selects) {
-      try {
-        const options = await select.$$('option');
-        if (options.length > 1) {
-          // Select first non-empty option
-          const firstValue = await options[1].evaluate(el => el.value);
-          if (firstValue) {
-            await select.select(firstValue);
-            console.log('✅ Dropdown selection made');
+  private async answerCommonQuestions(page: Page, userInfo: any): Promise<void> {
+    const commonAnswers = {
+      'years of experience': userInfo.experience || '2',
+      'willing to relocate': userInfo.relocate || 'Yes',
+      'authorization to work': 'Yes',
+      'notice period': userInfo.noticePeriod || '30 days',
+      'expected salary': userInfo.expectedSalary || 'Competitive',
+      'start date': userInfo.startDate || 'Immediately available'
+    };
+
+    try {
+      // Handle text inputs
+      const inputs = await page.$('input[type="text"], input[type="number"]');
+      
+      for (const input of inputs) {
+        const label = await input.evaluate(el => {
+          const labelEl = el.closest('.form-element, .field')?.querySelector('label');
+          return labelEl?.textContent?.toLowerCase() || '';
+        });
+
+        for (const [keyword, answer] of Object.entries(commonAnswers)) {
+          if (label.includes(keyword)) {
+            await input.click();
+            await input.type(answer, { delay: 50 });
+            console.log(`✅ Answered: ${keyword} = ${answer}`);
+            break;
           }
         }
-      } catch (error) {
-        // Continue with other selects
       }
-    }
 
-  } catch (error) {
-    console.log('⚠️ Question answering failed:', error.message);
-  }
-}
-
-private async findAndHighlightSubmitButton(page: Page): Promise<any> {
-  try {
-    const submitSelectors = [
-      'button[type="submit"]',
-      'input[type="submit"]',
-      'button:contains("Submit")',
-      'button:contains("Apply")',
-      '.submit-btn',
-      '.apply-btn',
-      '[data-test*="submit"]'
-    ];
-
-    for (const selector of submitSelectors) {
-      const button = await page.$(selector);
-      if (button) {
-        // Highlight the submit button
-        await button.evaluate(el => {
-          el.style.border = '5px solid red';
-          el.style.backgroundColor = 'yellow';
-          el.style.color = 'black';
-          el.style.fontWeight = 'bold';
-          el.scrollIntoView({ behavior: 'smooth' });
-        });
-        
-        console.log('🎯 SUBMIT BUTTON HIGHLIGHTED - Ready for manual click');
-        return button;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    console.log('⚠️ Submit button highlighting failed:', error.message);
-    return null;
-  }
-}
-
-// Updated main application method
-async getJobDescriptionAndApply(jobUrl: string, resumeContent: string, userInfo?: any): Promise<{
-  description: string;
-  applied: boolean;
-  applicationMethod: string;
-  formFilled?: boolean;
-  readyForSubmission?: boolean;
-}> {
-  
-  // Handle demo jobs
-  if (jobUrl.includes('demo-')) {
-    return {
-      description: 'Demo job description',
-      applied: true,
-      applicationMethod: 'demo_application'
-    };
-  }
-
-  try {
-    if (!this.useHttpOnly && this.page) {
-      await this.page.goto(jobUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      // Extract description
-      const description = await this.page.$eval(
-        '.description__text, .show-more-less-html__markup, .job-description', 
-        el => el.textContent?.trim() || 'Job description not found'
-      ).catch(() => 'Job description not available');
-
-      // Look for apply button and try to click it
-      const applyButton = await this.page.$('.jobs-s-apply button, .apply-button, [class*="apply"]');
-      
-      if (applyButton) {
-        console.log('🎯 Apply button found, clicking...');
-        await applyButton.click();
-        await this.sleep(3000);
-        
-        // Check if form appeared
-        const hasForm = await this.page.$('form, input[type="email"], textarea') !== null;
-        
-        if (hasForm && userInfo) {
-          console.log('📝 Application form detected, filling automatically...');
-          const formResult = await this.fillApplicationForm(this.page, userInfo, userInfo.resumePath);
-          
-          return {
-            description,
-            applied: false, // Not submitted yet
-            applicationMethod: 'form_filled_awaiting_submission',
-            formFilled: formResult.formFilled,
-            readyForSubmission: formResult.readyForSubmission
-          };
-        } else {
-          return {
-            description,
-            applied: true,
-            applicationMethod: 'direct_application_completed'
-          };
+      // Handle dropdowns
+      const selects = await page.$('select');
+      for (const select of selects) {
+        try {
+          const options = await select.$('option');
+          if (options.length > 1) {
+            // Select first non-empty option
+            const firstValue = await options[1].evaluate(el => el.value);
+            if (firstValue) {
+              await select.select(firstValue);
+              console.log('✅ Dropdown selection made');
+            }
+          }
+        } catch (error) {
+          // Continue with other selects
         }
       }
+
+    } catch (error) {
+      console.log('⚠️ Question answering failed:', error);
     }
-    
-    return {
-      description: 'Could not access application form',
-      applied: false,
-      applicationMethod: 'access_failed'
-    };
-    
-  } catch (error) {
-    return {
-      description: 'Error processing application',
-      applied: false,
-      applicationMethod: 'error'
-    };
   }
-}
 
+  private async findAndHighlightSubmitButton(page: Page): Promise<any> {
+    try {
+      const submitSelectors = [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:contains("Submit")',
+        'button:contains("Apply")',
+        '.submit-btn',
+        '.apply-btn',
+        '[data-test*="submit"]'
+      ];
 
+      for (const selector of submitSelectors) {
+        const button = await page.$(selector);
+        if (button) {
+          // Highlight the submit button
+          await button.evaluate((el: HTMLElement) => {
+            el.style.border = '5px solid red';
+            el.style.backgroundColor = 'yellow';
+            el.style.color = 'black';
+            el.style.fontWeight = 'bold';
+            el.scrollIntoView({ behavior: 'smooth' });
+          });
+          
+          console.log('🎯 SUBMIT BUTTON HIGHLIGHTED - Ready for manual click');
+          return button;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.log('⚠️ Submit button highlighting failed:', error);
+      return null;
+    }
+  }
 }

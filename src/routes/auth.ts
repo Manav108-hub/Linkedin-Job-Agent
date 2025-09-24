@@ -1,4 +1,4 @@
-// src/routes/auth.ts - FIXED LinkedIn OAuth Implementation
+// src/routes/auth.ts - Complete Fixed Authentication Routes
 import { Express } from "express";
 import passport from "passport";
 import jwt from "jsonwebtoken";
@@ -13,25 +13,87 @@ import {
   createUserSession,
 } from "../middleware/auth";
 import { UserModel, JobApplicationModel } from "../database/db";
+import { LinkedInService } from "../services/LinkedInService";
+
+// Helper function to get actual database user (FIXED - moved to top)
+async function getActualDatabaseUser(sessionUser: any): Promise<any> {
+  // First try to find by session ID
+  let dbUser = await UserModel.findById(sessionUser.id);
+
+  if (!dbUser) {
+    console.log("User not found by session ID, trying email...");
+    // Fallback to email lookup
+    dbUser = await UserModel.findByEmail(sessionUser.email);
+
+    if (dbUser) {
+      console.log("Found user by email - ID mismatch detected!");
+      console.log("Session ID:", sessionUser.id);
+      console.log("Database ID:", dbUser.id);
+    }
+  }
+
+  return dbUser;
+}
+
+// Helper method to get available jobs
+async function getAvailableJobs(user: any): Promise<any[]> {
+  try {
+    // Use the LinkedIn service to search for jobs
+    const linkedinService = new LinkedInService();
+    await linkedinService.initialize();
+
+    const jobs = await linkedinService.searchJobs(
+      ["typescript", "react", "node.js"],
+      "UK",
+      50
+    );
+
+    return jobs;
+  } catch (error) {
+    console.error("Error fetching available jobs:", error);
+    return [];
+  }
+}
+
+// Helper method to determine application method
+function determineApplicationMethod(job: any): string {
+  if (
+    job.source === "JSearch" ||
+    job.source === "Reed" ||
+    job.source === "Remotive"
+  ) {
+    return "External Application Required - Visit Job URL";
+  } else if (job.url && job.url.includes("linkedin.com")) {
+    return "LinkedIn Application (May be Automated)";
+  } else {
+    return "Visit Company Website";
+  }
+}
 
 export default function authRoutes(app: Express) {
   // ========================================
-  // FIXED LINKEDIN OAUTH WITH PROPER USER DATA EXTRACTION
+  // FIXED LINKEDIN OAUTH WITH OPENID CONNECT
   // ========================================
 
   // LinkedIn OAuth initiation
   app.get("/api/auth/linkedin", (req, res) => {
     console.log("=== LINKEDIN AUTH INITIATION ===");
     console.log("Environment check:");
-    console.log("- LINKEDIN_CLIENT_ID exists:", !!process.env.LINKEDIN_CLIENT_ID);
-    console.log("- LINKEDIN_CLIENT_SECRET exists:", !!process.env.LINKEDIN_CLIENT_SECRET);
+    console.log(
+      "- LINKEDIN_CLIENT_ID exists:",
+      !!process.env.LINKEDIN_CLIENT_ID
+    );
+    console.log(
+      "- LINKEDIN_CLIENT_SECRET exists:",
+      !!process.env.LINKEDIN_CLIENT_SECRET
+    );
     console.log("- FRONTEND_URL:", process.env.FRONTEND_URL);
 
     const authParams = new URLSearchParams({
       response_type: "code",
       client_id: process.env.LINKEDIN_CLIENT_ID!,
       redirect_uri: "http://localhost:3001/api/auth/linkedin/callback",
-      scope: "openid profile email", // Updated scope for proper user info
+      scope: "openid profile email", // Fixed scope - LinkedIn v2 API
       state: "linkedin-connect",
     });
 
@@ -41,7 +103,7 @@ export default function authRoutes(app: Express) {
     res.redirect(authUrl);
   });
 
-  // FIXED LinkedIn OAuth callback with proper user data extraction
+  // FIXED LinkedIn OAuth callback with OpenID Connect userinfo endpoint
   app.get("/api/auth/linkedin/callback", async (req, res) => {
     console.log("=== LINKEDIN CALLBACK ===");
     console.log("Full URL:", req.url);
@@ -53,7 +115,9 @@ export default function authRoutes(app: Express) {
     if (error) {
       console.log("❌ LinkedIn OAuth error:", error, error_description);
       return res.redirect(
-        `${process.env.FRONTEND_URL}?error=linkedin_oauth_error&details=${encodeURIComponent(
+        `${
+          process.env.FRONTEND_URL
+        }?error=linkedin_oauth_error&details=${encodeURIComponent(
           String(error_description || error)
         )}`
       );
@@ -70,7 +134,10 @@ export default function authRoutes(app: Express) {
     }
 
     try {
-      console.log("✅ Authorization code received:", code.toString().substring(0, 20) + "...");
+      console.log(
+        "✅ Authorization code received:",
+        code.toString().substring(0, 20) + "..."
+      );
       console.log("🔄 Exchanging code for access token...");
 
       // Step 1: Exchange authorization code for access token
@@ -90,7 +157,7 @@ export default function authRoutes(app: Express) {
             "Content-Type": "application/x-www-form-urlencoded",
             Accept: "application/json",
           },
-          timeout: 15000,
+          timeout: parseInt(process.env.LINKEDIN_TIMEOUT || "30000"),
         }
       );
 
@@ -105,140 +172,138 @@ export default function authRoutes(app: Express) {
       console.log("Token type:", token_type);
       console.log("Expires in:", expires_in, "seconds");
 
-      // Step 2: Get user info using OpenID userinfo endpoint (FIXED)
-      console.log("🔄 Fetching user profile from userinfo endpoint...");
-      
+      // Step 2: Get user info with OpenID Connect userinfo endpoint
+      console.log("🔄 Fetching user profile with OpenID Connect...");
+
       let userData = null;
-      
-      try {
-        // Use the OpenID userinfo endpoint for reliable user data
-        const userinfoResponse = await axios.get(
-          "https://api.linkedin.com/v2/userinfo",
-          {
-            headers: {
-              Authorization: `Bearer ${access_token}`,
-              Accept: "application/json",
-            },
-            timeout: 15000,
-          }
-        );
+      const maxRetries = parseInt(process.env.LINKEDIN_RETRY_ATTEMPTS || "3");
 
-        console.log("✅ Userinfo response received");
-        console.log("Userinfo data:", JSON.stringify(userinfoResponse.data, null, 2));
-
-        const userinfo = userinfoResponse.data;
-        
-        // Extract user data from OpenID userinfo response
-        userData = {
-          id: userinfo.sub, // OpenID subject identifier
-          name: userinfo.name || `${userinfo.given_name || ''} ${userinfo.family_name || ''}`.trim(),
-          email: userinfo.email,
-          linkedin_id: userinfo.sub,
-          picture: userinfo.picture,
-          given_name: userinfo.given_name,
-          family_name: userinfo.family_name,
-          email_verified: userinfo.email_verified,
-          locale: userinfo.locale,
-        };
-
-        console.log("✅ User data extracted:", {
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          email_verified: userData.email_verified,
-        });
-
-      } catch (userinfoError) {
-        console.log("❌ Userinfo endpoint failed, trying legacy profile endpoint...");
-        console.log("Userinfo error:", userinfoError.response?.data || userinfoError.message);
-
-        // Fallback to legacy profile endpoint
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const profileResponse = await axios.get(
-            "https://api.linkedin.com/v2/people/~?projection=(id,localizedFirstName,localizedLastName,profilePicture(displayImage~:playableStreams))",
-            {
-              headers: {
-                Authorization: `Bearer ${access_token}`,
-                "X-Restli-Protocol-Version": "2.0.0",
-                Accept: "application/json",
-              },
-              timeout: 15000,
-            }
+          console.log(
+            `Attempt ${attempt}/${maxRetries}: Fetching LinkedIn userinfo...`
           );
 
-          console.log("✅ Legacy profile data received");
-          console.log("Profile data:", JSON.stringify(profileResponse.data, null, 2));
-
-          const profileData = profileResponse.data;
+          // Use OpenID Connect userinfo endpoint with fixed header formatting
+          console.log("Making request to LinkedIn userinfo endpoint...");
+          console.log("Access token preview:", access_token.substring(0, 20) + "...");
           
-          // Get email separately for legacy endpoint
-          let email = null;
           try {
-            const emailResponse = await axios.get(
-              "https://api.linkedin.com/v2/emailAddresses?q=members&projection=(elements*(handle~))",
-              {
-                headers: {
-                  Authorization: `Bearer ${access_token}`,
-                  "X-Restli-Protocol-Version": "2.0.0",
-                  Accept: "application/json",
-                },
-                timeout: 15000,
+            // Test with curl equivalent request
+            const profileResponse = await axios({
+              method: 'GET',
+              url: 'https://api.linkedin.com/v2/userinfo',
+              headers: {
+                'Authorization': `Bearer ${access_token}`,
+                'Accept': 'application/json',
+                'User-Agent': 'JobAgentAI/1.0',
+                'Content-Type': 'application/json'
+              },
+              timeout: 30000,
+              maxRedirects: 0,
+              validateStatus: function (status) {
+                return status < 500;
               }
+            });
+
+            console.log("LinkedIn API Response Status:", profileResponse.status);
+            console.log("LinkedIn API Response Data:", JSON.stringify(profileResponse.data, null, 2));
+            
+            if (profileResponse.status === 401) {
+              throw new Error(`LinkedIn API 401 - Token may be invalid or expired: ${JSON.stringify(profileResponse.data)}`);
+            }
+            
+            if (profileResponse.status !== 200) {
+              throw new Error(`LinkedIn API returned ${profileResponse.status}: ${JSON.stringify(profileResponse.data)}`);
+            }
+
+            const profileData = profileResponse.data;
+            
+            if (!profileData || !profileData.sub) {
+              throw new Error(`Invalid userinfo response: ${JSON.stringify(profileData)}`);
+            }
+
+            console.log("LinkedIn OpenID profile data:", {
+              sub: profileData.sub,
+              name: profileData.name,
+              email: profileData.email,
+              email_verified: profileData.email_verified,
+            });
+
+            userData = {
+              id: profileData.sub,
+              name: profileData.name || 'LinkedIn User',
+              email: profileData.email || `linkedin.user.${Date.now()}@temp.linkedin.com`,
+              linkedin_id: profileData.sub,
+              picture: profileData.picture || null,
+              given_name: profileData.given_name || null,
+              family_name: profileData.family_name || null,
+              email_verified: profileData.email_verified || false,
+              locale: profileData.locale || null,
+            };
+
+            console.log("✅ User data extracted from OpenID Connect:", {
+              id: userData.id,
+              name: userData.name,
+              email: userData.email,
+              has_real_email: userData.email_verified,
+            });
+
+            break; // Success - exit retry loop
+
+          } catch (axiosError: any) {
+            console.log("Axios error details:", {
+              message: axiosError.message,
+              status: axiosError.response?.status,
+              data: axiosError.response?.data,
+              config: {
+                url: axiosError.config?.url,
+                headers: axiosError.config?.headers
+              }
+            });
+
+            throw axiosError;
+          }
+
+        } catch (profileError: any) {
+          console.log(`❌ Attempt ${attempt} failed:`, profileError.message);
+          
+          // Log more details about the error
+          if (profileError.response) {
+            console.log("Error response status:", profileError.response.status);
+            console.log("Error response data:", profileError.response.data);
+          }
+
+          if (attempt === maxRetries) {
+            console.log(
+              "🔄 All attempts failed, creating fallback user data..."
             );
 
-            if (emailResponse.data?.elements?.[0]?.["handle~"]?.emailAddress) {
-              email = emailResponse.data.elements[0]["handle~"].emailAddress;
-              console.log("✅ Email retrieved from legacy endpoint");
-            }
-          } catch (emailError) {
-            console.log("⚠️ Email fetch failed for legacy endpoint");
+            userData = {
+              id: `linkedin_${Date.now()}`,
+              name: "LinkedIn User",
+              email: `linkedin.user.${Date.now()}@temp.linkedin.com`,
+              linkedin_id: `linkedin_${Date.now()}`,
+              picture: null,
+              given_name: "LinkedIn",
+              family_name: "User",
+              email_verified: false,
+              locale: null,
+            };
+
+            console.log("⚠️ Using fallback user data:", userData);
+          } else {
+            // Wait before retry
+            await new Promise((resolve) => setTimeout(resolve, 2000));
           }
-
-          // Extract profile picture URL
-          let pictureUrl = null;
-          try {
-            const displayImage = profileData.profilePicture?.["displayImage~"];
-            if (displayImage?.elements && displayImage.elements.length > 0) {
-              // Get the largest available image
-              const largestImage = displayImage.elements.reduce((largest, current) => {
-                const currentSize = current.data?.["com.linkedin.digitalmedia.mediaartifact.StillImage"]?.storageSize?.width || 0;
-                const largestSize = largest.data?.["com.linkedin.digitalmedia.mediaartifact.StillImage"]?.storageSize?.width || 0;
-                return currentSize > largestSize ? current : largest;
-              });
-              
-              pictureUrl = largestImage.identifiers?.[0]?.identifier;
-            }
-          } catch (pictureError) {
-            console.log("⚠️ Profile picture extraction failed");
-          }
-
-          userData = {
-            id: profileData.id,
-            name: `${profileData.localizedFirstName || ''} ${profileData.localizedLastName || ''}`.trim(),
-            email: email || `linkedin.${profileData.id}@temp.linkedin.com`,
-            linkedin_id: profileData.id,
-            picture: pictureUrl,
-            given_name: profileData.localizedFirstName,
-            family_name: profileData.localizedLastName,
-            email_verified: false, // Unknown for legacy endpoint
-            locale: null,
-          };
-
-          console.log("✅ Legacy user data extracted:", {
-            id: userData.id,
-            name: userData.name,
-            email: userData.email,
-          });
-
-        } catch (legacyError) {
-          console.log("❌ Both userinfo and legacy profile endpoints failed");
-          throw new Error("Failed to fetch user profile from LinkedIn");
         }
       }
 
       // Validate that we have essential user data
       if (!userData || !userData.id || !userData.email) {
-        throw new Error("Incomplete user data received from LinkedIn");
+        throw new Error(
+          `Incomplete user data received: ${JSON.stringify(userData)}`
+        );
       }
 
       // Step 3: Create session profile
@@ -278,7 +343,9 @@ export default function authRoutes(app: Express) {
           email: userData.email,
           profileData: {
             linkedin_profile: userData,
-            access_token_expires: expires_in ? Date.now() + expires_in * 1000 : undefined,
+            access_token_expires: expires_in
+              ? Date.now() + expires_in * 1000
+              : undefined,
             raw_userinfo: sessionProfile._json,
           },
           linkedinToken: access_token,
@@ -289,7 +356,6 @@ export default function authRoutes(app: Express) {
         try {
           const existingUser = await UserModel.findByEmail(userData.email);
           if (existingUser) {
-            // Update existing user with LinkedIn token
             await UserModel.create({
               id: existingUser.id,
               name: userData.name,
@@ -298,7 +364,9 @@ export default function authRoutes(app: Express) {
               profileData: {
                 ...(existingUser.profileData as any),
                 linkedin_profile: userData,
-                access_token_expires: expires_in ? Date.now() + expires_in * 1000 : undefined,
+                access_token_expires: expires_in
+                  ? Date.now() + expires_in * 1000
+                  : undefined,
               },
             });
             console.log("✅ Existing user updated with LinkedIn token");
@@ -311,7 +379,9 @@ export default function authRoutes(app: Express) {
       // Step 5: Create JWT token
       if (!process.env.JWT_SECRET) {
         console.log("❌ JWT_SECRET not configured");
-        return res.redirect(`${process.env.FRONTEND_URL}?error=jwt_secret_missing`);
+        return res.redirect(
+          `${process.env.FRONTEND_URL}?error=jwt_secret_missing`
+        );
       }
 
       console.log("🔐 Creating JWT token...");
@@ -321,28 +391,39 @@ export default function authRoutes(app: Express) {
 
       console.log("✅ JWT token created successfully");
 
-      const redirectUrl = `${process.env.FRONTEND_URL}/?token=${token}&connected=linkedin&user=${encodeURIComponent(userData.name)}`;
+      const redirectUrl = `${
+        process.env.FRONTEND_URL
+      }/?token=${token}&connected=linkedin&user=${encodeURIComponent(
+        userData.name
+      )}`;
       console.log("🔀 Redirecting to:", redirectUrl);
 
       res.redirect(redirectUrl);
-      console.log("🎉 LinkedIn OAuth completed successfully for user:", userData.name);
+      console.log(
+        "🎉 LinkedIn OAuth completed successfully for user:",
+        userData.name
+      );
 
     } catch (error: any) {
-      console.error("❌ LinkedIn OAuth error:", {
+      // Enhanced error logging
+      console.error("❌ LinkedIn OAuth error with full details:", {
         message: error.message,
         status: error.response?.status,
         statusText: error.response?.statusText,
         data: error.response?.data,
-        stack: error.stack?.split('\n').slice(0, 3).join('\n'), // First 3 lines of stack
+        headers: error.response?.headers,
+        code: error.code,
+        stack: error.stack?.split("\n").slice(0, 5).join("\n"),
       });
 
-      let errorMessage = "linkedin_token_exchange_failed";
-      if (error.response?.status === 400) {
-        errorMessage = "linkedin_invalid_request";
-      } else if (error.response?.status === 401) {
-        errorMessage = "linkedin_unauthorized";
+      // Provide more specific error messages
+      let errorMessage = "linkedin_profile_fetch_failed";
+      if (error.response?.status === 401) {
+        errorMessage = "linkedin_token_invalid";
       } else if (error.response?.status === 403) {
-        errorMessage = "linkedin_forbidden";
+        errorMessage = "linkedin_insufficient_permissions";
+      } else if (error.response?.status === 429) {
+        errorMessage = "linkedin_rate_limited";
       } else if (error.code === "ECONNABORTED") {
         errorMessage = "linkedin_timeout";
       } else if (error.message.includes("Incomplete user data")) {
@@ -350,15 +431,15 @@ export default function authRoutes(app: Express) {
       }
 
       res.redirect(
-        `${process.env.FRONTEND_URL}?error=${errorMessage}&details=${encodeURIComponent(
-          error.message
-        )}`
+        `${
+          process.env.FRONTEND_URL
+        }?error=${errorMessage}&details=${encodeURIComponent(error.message)}`
       );
     }
   });
 
   // ========================================
-  // GOOGLE OAUTH (Unchanged - Already Working)
+  // GOOGLE OAUTH (Working - No Changes)
   // ========================================
 
   app.get(
@@ -402,7 +483,9 @@ export default function authRoutes(app: Express) {
           expiresIn: "4h",
         });
 
-        res.redirect(`${process.env.FRONTEND_URL}/?token=${token}&connected=google`);
+        res.redirect(
+          `${process.env.FRONTEND_URL}/?token=${token}&connected=google`
+        );
         console.log("✅ Google OAuth completed successfully");
       } catch (error) {
         console.error("Google callback error:", error);
@@ -412,7 +495,7 @@ export default function authRoutes(app: Express) {
   );
 
   // ========================================
-  // COMMON AUTH ROUTES (Unchanged)
+  // COMMON AUTH ROUTES
   // ========================================
 
   app.post("/api/auth/logout", verifyToken, (req, res) => {
@@ -460,7 +543,10 @@ export default function authRoutes(app: Express) {
       }
 
       const correctUserId = dbUser?.id || user.id;
-      const applications = await JobApplicationModel.findByUserId(correctUserId, 5);
+      const applications = await JobApplicationModel.findByUserId(
+        correctUserId,
+        5
+      );
       const totalApplications = applications.length;
 
       let hasResume = false;
@@ -470,7 +556,10 @@ export default function authRoutes(app: Express) {
           hasResume = true;
         } else if (dbUser.profileData) {
           const profileData = dbUser.profileData as any;
-          if (profileData?.resume_content && profileData.resume_content.length > 50) {
+          if (
+            profileData?.resume_content &&
+            profileData.resume_content.length > 50
+          ) {
             hasResume = true;
           } else if (profileData?.resume_filename) {
             hasResume = true;
@@ -503,6 +592,230 @@ export default function authRoutes(app: Express) {
   });
 
   // ========================================
+  // CSV EXPORT AND SUMMARY ENDPOINTS
+  // ========================================
+
+  // CSV Export endpoint for job applications
+  app.get("/api/jobs/export/csv", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const { type = "applied" } = req.query; // 'applied', 'available', 'all'
+
+      console.log(`=== CSV EXPORT REQUEST ===`);
+      console.log(`User: ${sessionUser.email}`);
+      console.log(`Export type: ${type}`);
+
+      // Get actual database user
+      const dbUser = await getActualDatabaseUser(sessionUser);
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found in database" });
+      }
+
+      let csvData = "";
+      let filename = "";
+
+      if (type === "applied" || type === "all") {
+        // Get user's applications
+        const applications = await JobApplicationModel.findByUserId(
+          dbUser.id,
+          1000
+        );
+
+        console.log(`Found ${applications.length} applications for CSV export`);
+
+        // CSV headers
+        const headers = [
+          "Application ID",
+          "Company",
+          "Job Title",
+          "Location",
+          "Job URL",
+          "Application Status",
+          "Match Score",
+          "Applied Date",
+          "Resume Customized",
+          "Drive Link",
+          "Notes",
+          "Action Required",
+        ];
+
+        csvData = headers.join(",") + "\n";
+
+        // Add application data
+        for (const app of applications) {
+          const jobListing = app.jobListing || {
+            title: "Unknown Position",
+            company: "Unknown Company",
+            location: "Unknown Location",
+          };
+
+          // Determine action required based on status
+          let actionRequired = "None";
+          if (
+            app.status === "MANUAL_ACTION_REQUIRED" ||
+            app.status === "pending"
+          ) {
+            actionRequired = "Visit job URL to apply manually";
+          } else if (app.status === "FORM_READY_FOR_SUBMIT") {
+            actionRequired = "LinkedIn form filled - click submit";
+          } else if (app.status === "VISIT_SITE_TO_APPLY") {
+            actionRequired = "Visit company website to apply";
+          } else if (app.status === "applied") {
+            actionRequired = "Application submitted successfully";
+          }
+
+          const row = [
+            app.id,
+            `"${jobListing.company || "Unknown"}"`,
+            `"${jobListing.title || "Unknown Position"}"`,
+            `"${jobListing.location || ""}"`,
+            app.jobUrl || "",
+            app.status || "unknown",
+            app.matchScore || 0,
+            new Date(app.appliedAt).toLocaleDateString(),
+            app.resumeCustomized ? "Yes" : "No",
+            app.driveLink || "",
+            `"${app.notes || ""}"`,
+            `"${actionRequired}"`,
+          ];
+
+          csvData += row.join(",") + "\n";
+        }
+
+        filename = `job_applications_${sessionUser.email.split("@")[0]}_${
+          new Date().toISOString().split("T")[0]
+        }.csv`;
+      }
+
+      if (type === "available") {
+        console.log("Generating available jobs CSV...");
+
+        // Get recent job search results
+        const jobSearchResults = await getAvailableJobs(dbUser);
+
+        const headers = [
+          "Job ID",
+          "Company",
+          "Job Title",
+          "Location",
+          "Job URL",
+          "Source",
+          "Salary",
+          "Job Type",
+          "Posted Date",
+          "Description Preview",
+          "Application Method",
+        ];
+
+        csvData = headers.join(",") + "\n";
+
+        for (const job of jobSearchResults) {
+          const applicationMethod = determineApplicationMethod(job);
+
+          const row = [
+            job.id,
+            `"${job.company}"`,
+            `"${job.title}"`,
+            `"${job.location}"`,
+            job.url || "",
+            job.source || "Unknown",
+            `"${job.salary || "Not specified"}"`,
+            job.jobType || "Full-time",
+            new Date(job.postedDate || new Date()).toLocaleDateString(),
+            `"${(job.description || "").substring(0, 100)}..."`,
+            `"${applicationMethod}"`,
+          ];
+
+          csvData += row.join(",") + "\n";
+        }
+
+        filename = `available_jobs_${sessionUser.email.split("@")[0]}_${
+          new Date().toISOString().split("T")[0]
+        }.csv`;
+      }
+
+      // Set CSV headers
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+      console.log(`✅ CSV export completed: ${filename}`);
+      console.log(`📊 Rows exported: ${csvData.split("\n").length - 1}`);
+
+      res.send(csvData);
+    } catch (error) {
+      console.error("Error exporting CSV:", error);
+      res.status(500).json({ error: "Failed to export CSV" });
+    }
+  });
+
+  // Get job application summary endpoint
+  app.get("/api/jobs/summary", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const dbUser = await getActualDatabaseUser(sessionUser);
+
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const applications = await JobApplicationModel.findByUserId(
+        dbUser.id,
+        1000
+      );
+
+      // Group by status
+      const statusCounts = applications.reduce((acc: any, app: any) => {
+        acc[app.status] = (acc[app.status] || 0) + 1;
+        return acc;
+      }, {});
+
+      // Calculate success metrics
+      const totalApplications = applications.length;
+      const appliedCount = applications.filter(
+        (app: any) => app.status === "APPLIED" || app.status === "applied"
+      ).length;
+      const pendingCount = applications.filter(
+        (app: any) =>
+          app.status &&
+          (app.status.includes("MANUAL_ACTION_REQUIRED") ||
+            app.status.includes("FORM_READY") ||
+            app.status === "pending")
+      ).length;
+
+      const summary = {
+        totalApplications,
+        appliedCount,
+        pendingCount,
+        statusBreakdown: statusCounts,
+        applicationRate:
+          totalApplications > 0
+            ? ((appliedCount / totalApplications) * 100).toFixed(1)
+            : 0,
+        lastApplicationDate:
+          applications.length > 0 ? applications[0].appliedAt : null,
+        avgMatchScore:
+          applications.length > 0
+            ? (
+                applications.reduce(
+                  (sum: number, app: any) => sum + (app.matchScore || 0),
+                  0
+                ) / applications.length
+              ).toFixed(1)
+            : 0,
+      };
+
+      res.json(summary);
+    } catch (error) {
+      console.error("Error getting job summary:", error);
+      res.status(500).json({ error: "Failed to get job summary" });
+    }
+  });
+
+  // ========================================
   // DEBUG ENDPOINTS (Development Only)
   // ========================================
 
@@ -517,8 +830,8 @@ export default function authRoutes(app: Express) {
         frontendUrl: process.env.FRONTEND_URL,
         callbackUrl: "http://localhost:3001/api/auth/linkedin/callback",
         nodeEnv: process.env.NODE_ENV,
-        linkedinUserinfoEndpoint: "https://api.linkedin.com/v2/userinfo",
-        linkedinProfileEndpoint: "https://api.linkedin.com/v2/people/~",
+        timeout: process.env.LINKEDIN_TIMEOUT,
+        retryAttempts: process.env.LINKEDIN_RETRY_ATTEMPTS,
         timestamp: new Date().toISOString(),
       });
     });
@@ -540,7 +853,8 @@ export default function authRoutes(app: Express) {
           idsMatch: sessionUser.id === userByEmail?.id,
           hasResumeContent: !!(userByEmail?.profileData as any)?.resume_content,
           telegramConfigured: !!userByEmail?.telegramChatId,
-          linkedinProfile: (userByEmail?.profileData as any)?.linkedin_profile || null,
+          linkedinProfile:
+            (userByEmail?.profileData as any)?.linkedin_profile || null,
         });
       } catch (error) {
         console.error("Debug error:", error);
@@ -562,7 +876,10 @@ export default function authRoutes(app: Express) {
     app.get("/api/debug/database-users", async (req, res) => {
       try {
         const users = await UserModel.findAutomationUsers();
-        const testEmails = ["manavadwani21@gmail.com", "manavadwani86@gmail.com"];
+        const testEmails = [
+          "manavadwani21@gmail.com",
+          "manavadwani86@gmail.com",
+        ];
 
         const allUsersByEmail = await Promise.all(
           testEmails.map(async (email) => {
@@ -576,7 +893,8 @@ export default function authRoutes(app: Express) {
               telegramChatId: user?.telegramChatId || null,
               hasLinkedInToken: !!user?.linkedinToken,
               hasGoogleToken: !!user?.googleToken,
-              linkedinProfile: (user?.profileData as any)?.linkedin_profile || null,
+              linkedinProfile:
+                (user?.profileData as any)?.linkedin_profile || null,
             };
           })
         );

@@ -255,6 +255,83 @@ Started: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`;
     }
   }
 
+  // ADD this method to your TelegramService.ts class:
+
+async sendDailyJobSuggestions(
+  userEmail: string,
+  jobSuggestions: any[]
+): Promise<boolean> {
+  try {
+    const user = await UserModel.findByEmail(userEmail);
+    if (!user || !user.telegramChatId) {
+      console.log(`No Telegram chat ID for user: ${userEmail}`);
+      return false;
+    }
+
+    // Format the suggestions message
+    const message = this.formatJobSuggestionsMessage(jobSuggestions);
+    
+    const result = await this.sendMessage(user.telegramChatId, message);
+
+    if (result.success) {
+      console.log(`✅ Daily suggestions sent to ${userEmail}`);
+    } else {
+      console.log(`❌ Failed to send daily suggestions: ${result.message}`);
+    }
+
+    return result.success;
+  } catch (error) {
+    console.error("Error sending daily job suggestions:", error);
+    return false;
+  }
+}
+
+private formatJobSuggestionsMessage(jobSuggestions: any[]): string {
+  const date = new Date().toLocaleDateString("en-IN");
+  const topJobs = jobSuggestions
+    .sort((a, b) => b.analysis.matchScore - a.analysis.matchScore)
+    .slice(0, 5);
+
+  let message = `🌅 <b>Daily Job Recommendations</b> - ${date}
+
+Found <b>${jobSuggestions.length}</b> new opportunities for you!
+
+<b>🎯 TOP MATCHES:</b>
+`;
+
+  topJobs.forEach((suggestion, index) => {
+    const job = suggestion.job;
+    const analysis = suggestion.analysis;
+    const matchEmoji = analysis.matchScore >= 80 ? "🎯" : 
+                      analysis.matchScore >= 60 ? "✅" : "📝";
+    
+    message += `
+${matchEmoji} <b>${job.title}</b> - ${job.company}
+📍 ${job.location || "Location TBD"}
+📊 Match: <b>${analysis.matchScore}%</b>
+💡 Key suggestion: ${suggestion.suggestions[0] || "Review job details"}
+🔗 <a href="${job.url}">Apply Here</a>
+
+`;
+  });
+
+  if (jobSuggestions.length > 5) {
+    message += `📋 <b>+${jobSuggestions.length - 5} more jobs</b> analyzed for you!
+`;
+  }
+
+  message += `
+📄 <b>Detailed suggestions saved to Google Drive</b>
+📊 <b>Excel report with all jobs available for download</b>
+
+💾 All recommendations are saved for your review.
+🎯 Apply to jobs that match your interests!
+
+⏰ Next update: Tomorrow at 9 AM IST`;
+
+  return message;
+}
+
   // Get recent chat updates to find user's chat ID
   async detectUserChatId(
     userEmail: string

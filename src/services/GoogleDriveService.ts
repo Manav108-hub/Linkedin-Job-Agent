@@ -3,6 +3,12 @@ import { google } from 'googleapis';
 import { Readable } from 'stream';
 
 export class GoogleDriveService {
+  saveDocument(htmlDocument: string, fileName: string, arg2: string): any {
+    throw new Error("Method not implemented.");
+  }
+  saveSpreadsheet(csvContent: string, fileName: string, arg2: string): any {
+    throw new Error("Method not implemented.");
+  }
   private drive;
   private auth;
   

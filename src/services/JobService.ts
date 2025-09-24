@@ -36,162 +36,202 @@ export class JobService {
   }
 
   // Interactive job processing with ACTUAL LinkedIn application
-  async processJobsForUser(
-    user: UserSession,
-    io: Socket,
-    criteria: JobSearchCriteria
-  ): Promise<void> {
-    try {
-      await this.linkedinService.initialize();
+  // REPLACE your processJobsForUser method in JobService.ts with this FIXED version:
 
-      io.emit("job_search_started", { message: "Searching for jobs..." });
+async processJobsForUser(
+  user: UserSession,
+  io: Socket,
+  criteria: JobSearchCriteria
+): Promise<void> {
+  try {
+    await this.linkedinService.initialize();
+    io.emit("job_search_started", { message: "Searching for jobs..." });
 
-      // 1. Login to LinkedIn with user's token
-      const loginSuccess = await this.linkedinService.loginWithToken(
-        user.linkedinToken!
-      );
-      if (!loginSuccess) {
-        console.log(
-          "⚠️ LinkedIn login failed, continuing with limited functionality"
-        );
-      }
+    // 1. Search for jobs (NO APPLICATION ATTEMPTS)
+    const jobs = await this.linkedinService.searchJobs(
+      criteria.keywords,
+      criteria.location,
+      20
+    );
 
-      // 2. Search for jobs
-      const jobs = await this.linkedinService.searchJobs(
-        criteria.keywords,
-        criteria.location,
-        10
-      );
+    io.emit("jobs_found", { count: jobs.length, jobs: jobs.slice(0, 5) });
 
-      io.emit("jobs_found", { count: jobs.length, jobs: jobs.slice(0, 3) });
-
-      if (jobs.length === 0) {
-        io.emit("job_search_completed", { message: "No matching jobs found." });
-        return;
-      }
-
-      // 3. Get the actual database user (FIX FOR ID MISMATCH)
-      const dbUser = await this.getActualDatabaseUser(user);
-      if (!dbUser) {
-        throw new Error(`User not found in database: ${user.email}`);
-      }
-
-      // 4. Get user's resume text using database user ID
-      const originalResume = await this.resumeService.getUserResumeText(
-        dbUser.id
-      );
-      console.log("DEBUG: Using resume text of length:", originalResume.length);
-
-      // 5. Initialize Google Drive service if user has token
-      let driveService: GoogleDriveService | null = null;
-      if (user.googleToken) {
-        try {
-          driveService = new GoogleDriveService(
-            user.googleToken,
-            user.googleRefreshToken
-          );
-          const driveTest = await driveService.testConnection();
-          console.log("Google Drive:", driveTest.message);
-        } catch (error) {
-          console.log(
-            "Google Drive initialization failed, continuing without Drive integration"
-          );
-        }
-      }
-
-      // 6. Process each job with ACTUAL APPLICATION
-      const applications: CustomizedApplication[] = [];
-
-      for (let i = 0; i < Math.min(jobs.length, 3); i++) {
-        // Limit to 3 for safety
-        const job = jobs[i];
-
-        try {
-          io.emit("processing_job", {
-            company: job.company,
-            title: job.title,
-            progress: Math.round(((i + 1) / Math.min(jobs.length, 3)) * 100),
-          });
-
-          const result = await this.processIndividualJobWithApplication(
-            dbUser,
-            job,
-            originalResume,
-            driveService,
-            user.linkedinToken!
-          );
-
-          applications.push(result.application);
-
-          // Send immediate Telegram notification for each application
-          if (result.actuallyApplied) {
-            await this.telegramService.sendJobApplicationNotification(
-              user.email,
-              {
-                ...job,
-                matchScore: result.matchScore,
-                resumeCustomized: result.resumeCustomized,
-              },
-              result.driveLink
-            );
-          }
-
-          io.emit("job_processed", {
-            company: job.company,
-            title: job.title,
-            matchScore: result.matchScore,
-            status: result.actuallyApplied
-              ? "✅ ACTUALLY APPLIED!"
-              : `⚠️ Application attempted: ${result.applicationMethod}`,
-            timestamp: new Date().toISOString(),
-            hrContactsFound: result.hrContactsCount,
-            resumeGenerated: true,
-            emailDrafted: result.hrContactsCount > 0,
-            resumeCustomized: result.resumeCustomized,
-            driveLink: result.driveLink,
-            applicationDetails: result.applicationDetails,
-          });
-
-          await this.sleep(5000); // Longer delay between applications
-        } catch (error: unknown) {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          console.error(
-            `Error processing job ${job.title} at ${job.company}:`,
-            errorMessage
-          );
-
-          io.emit("job_error", {
-            company: job.company,
-            title: job.title,
-            error: "Failed to process job",
-          });
-        }
-      }
-
-      await this.linkedinService.cleanup();
-
-      const actualApplications = applications.filter(
-        (app) => app.status === "applied"
-      ).length;
-      const customizedResumes = applications.filter(
-        (app) => app.customizedResume !== app.originalResume
-      ).length;
-
-      io.emit("job_search_completed", {
-        message: `Completed! ${actualApplications} actual applications submitted. ${customizedResumes} resumes AI-customized.`,
-        applications: actualApplications,
-        customizedResumes: customizedResumes,
-      });
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      console.error("Job processing error:", errorMessage);
-      io.emit("job_search_error", {
-        error: "Job search failed. Please try again.",
-      });
+    if (jobs.length === 0) {
+      io.emit("job_search_completed", { message: "No matching jobs found." });
+      return;
     }
+
+    // 2. Get actual database user
+    const dbUser = await this.getActualDatabaseUser(user);
+    if (!dbUser) {
+      throw new Error(`User not found in database: ${user.email}`);
+    }
+
+    // 3. Get user's resume text
+    const originalResume = await this.resumeService.getUserResumeText(dbUser.id);
+    console.log("Using resume text of length:", originalResume.length);
+
+    // 4. Analyze jobs and create suggestions (NO APPLICATIONS)
+    const jobSuggestions: any[] = [];
+
+    for (let i = 0; i < Math.min(jobs.length, 10); i++) {
+      const job = jobs[i];
+
+      try {
+        io.emit("processing_job", {
+          company: job.company,
+          title: job.title,
+          progress: Math.round(((i + 1) / Math.min(jobs.length, 10)) * 100),
+        });
+
+        // FIX: Get job description (assuming it returns string directly)
+        let jobDescription = "";
+        try {
+          // Try to get description from LinkedIn service
+          if (this.linkedinService.getJobDescription) {
+            const descriptionResult = await this.linkedinService.getJobDescription(job.url);
+            // Handle both string and object returns
+            jobDescription = typeof descriptionResult === 'string' ? 
+              descriptionResult : (descriptionResult.description || job.description || "");
+          } else {
+            // Fallback to job.description if method doesn't exist
+            jobDescription = job.description || "Job description not available";
+          }
+        } catch (descError) {
+          console.log("Failed to get detailed job description, using basic info");
+          jobDescription = job.description || `Job: ${job.title} at ${job.company}. Location: ${job.location}`;
+        }
+
+        // Analyze match with Gemini
+        let analysis = {
+          matchScore: 70,
+          missingSkills: [],
+          recommendations: []
+        };
+        
+        try {
+          analysis = await this.geminiService.analyzeJobMatch(
+            originalResume,
+            jobDescription
+          );
+        } catch (geminiError) {
+          console.log("Gemini analysis failed, using defaults");
+        }
+
+        // Generate improvement suggestions
+        let suggestions: string[] = [];
+        try {
+          // Check if the method exists (we'll add it to GeminiService)
+          if (typeof this.geminiService.generateJobSuggestions === 'function') {
+            suggestions = await this.geminiService.generateJobSuggestions(
+              originalResume,
+              jobDescription,
+              job.title,
+              job.company
+            );
+          } else {
+            // Fallback suggestions
+            suggestions = [
+              `Tailor your resume for ${job.title} position`,
+              `Research ${job.company} company culture and values`,
+              `Highlight relevant experience for this role`,
+              `Prepare specific examples for this job interview`
+            ];
+          }
+        } catch (suggestionError) {
+          console.log("Failed to generate suggestions, using fallback");
+          suggestions = [
+            `Review requirements for ${job.title}`,
+            `Customize resume for ${job.company}`,
+            `Prepare for technical interview`
+          ];
+        }
+
+        // FIX: Use existing JobListingModel.create method from your database
+        let savedJob;
+        try {
+          savedJob = await JobListingModel.create({
+            id: job.id,
+            title: job.title,
+            company: job.company,
+            location: job.location,
+            description: jobDescription,
+            url: job.url ?? undefined,
+            postedDate: this.safeParseDate(job.postedDate),
+          });
+        } catch (dbError) {
+          console.log("Failed to save job to database:", dbError);
+          // Continue without saving to database
+        }
+
+        const jobSuggestion = {
+          job: {
+            id: job.id,
+            title: job.title,
+            company: job.company,
+            location: job.location,
+            url: job.url,
+            postedDate: job.postedDate
+          },
+          analysis: {
+            matchScore: analysis.matchScore,
+            missingSkills: analysis.missingSkills,
+            recommendations: analysis.recommendations
+          },
+          suggestions: suggestions,
+          status: 'suggestion_ready'
+        };
+
+        jobSuggestions.push(jobSuggestion);
+
+        io.emit("job_processed", {
+          company: job.company,
+          title: job.title,
+          matchScore: analysis.matchScore,
+          status: `📋 Suggestions Ready (${analysis.matchScore}% match)`,
+          timestamp: new Date().toISOString(),
+          suggestionsCount: suggestions.length
+        });
+
+        await this.sleep(3000); // Delay between jobs
+
+      } catch (error) {
+        console.error(`Error processing job ${job.title}:`, error);
+        io.emit("job_error", {
+          company: job.company,
+          title: job.title,
+          error: "Failed to analyze job"
+        });
+      }
+    }
+
+    // Send Telegram notification with daily suggestions
+    if (jobSuggestions.length > 0) {
+      try {
+        await this.telegramService.sendDailyJobSuggestions(
+          user.email,
+          jobSuggestions
+        );
+      } catch (telegramError) {
+        console.log("Failed to send Telegram notification:", telegramError);
+      }
+    }
+
+    await this.linkedinService.cleanup();
+
+    io.emit("job_search_completed", {
+      message: `Found ${jobSuggestions.length} job suggestions! Check your Telegram for details.`,
+      suggestions: jobSuggestions.length,
+    });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Job processing error:", errorMessage);
+    io.emit("job_search_error", {
+      error: "Job search failed. Please try again."
+    });
   }
+}
 
   // Automated job processing for scheduled runs (UPDATED)
   async processJobsAutomated(
@@ -646,6 +686,104 @@ export class JobService {
       console.error("Error getting user application stats:", error);
       return null;
     }
+  }
+
+  // Add this to your JobService.ts to enhance application tracking
+
+async processJobApplication(job: any, user: any): Promise<{
+  applied: boolean;
+  applicationMethod: string;
+  status: string;
+  actionRequired?: string;
+}> {
+  try {
+    console.log(`🎯 Processing job: ${job.title} at ${job.company}`);
+    
+    // Determine application method based on job source
+    let applicationResult;
+    
+    if (job.source === 'JSearch' || job.source === 'Reed' || job.source === 'Remotive') {
+      // These are external job board jobs - require manual application
+      applicationResult = {
+        applied: false,
+        applicationMethod: 'external_application_required',
+        status: 'pending_manual_application',
+        actionRequired: `Visit ${job.url} to apply manually`,
+        requiresAction: true
+      };
+      
+      console.log(`📋 External job detected: ${job.source} - Manual application required`);
+      
+    } else if (job.url.includes('linkedin.com')) {
+      // Try LinkedIn automation
+      const linkedinResult = await this.linkedinService.getJobDescriptionAndApply(
+        job.url, 
+        user.resumeText || '', 
+        {
+          name: user.name,
+          email: user.email,
+          phone: user.phone || '',
+          coverLetter: this.generateCoverLetter(job, user)
+        }
+      );
+      
+      applicationResult = {
+        applied: linkedinResult.applied,
+        applicationMethod: linkedinResult.applicationMethod,
+        status: linkedinResult.applied ? 'applied' : 'application_attempted',
+        formFilled: linkedinResult.formFilled,
+        readyForSubmission: linkedinResult.readyForSubmission
+      };
+      
+      if (linkedinResult.formFilled && !linkedinResult.applied) {
+        applicationResult.actionRequired = 'Form filled - manual submission required';
+        applicationResult.requiresAction = true;
+      }
+      
+    } else {
+      // Other job sources
+      applicationResult = {
+        applied: false,
+        applicationMethod: 'external_site_application',
+        status: 'requires_manual_application',
+        actionRequired: `Visit ${job.url} to apply`,
+        requiresAction: true
+      };
+    }
+    
+    // Enhanced status tracking
+    const statusMap = {
+      'external_application_required': 'MANUAL_ACTION_REQUIRED',
+      'form_filled_awaiting_submission': 'FORM_READY_FOR_SUBMIT', 
+      'direct_application_completed': 'APPLIED',
+      'external_site_application': 'VISIT_SITE_TO_APPLY',
+      'demo_application': 'DEMO_ONLY',
+      'error': 'APPLICATION_FAILED'
+    };
+    
+    const finalStatus = statusMap[applicationResult.applicationMethod] || 'UNKNOWN';
+    
+    console.log(`📊 Application Status: ${finalStatus}`);
+    console.log(`🔗 Job URL: ${job.url}`);
+    console.log(`⚡ Action Required: ${applicationResult.actionRequired || 'None'}`);
+    
+    return {
+      ...applicationResult,
+      status: finalStatus
+    };
+    
+  } catch (error) {
+    console.error('Error processing job application:', error);
+    return {
+      applied: false,
+      applicationMethod: 'error',
+      status: 'APPLICATION_ERROR',
+      actionRequired: 'Error occurred - check logs'
+    };
+  }
+}
+  generateCoverLetter(job: any, user: any) {
+    throw new Error("Method not implemented.");
   }
 
   // Safe date parsing method

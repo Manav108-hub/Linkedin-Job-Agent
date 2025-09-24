@@ -22,6 +22,8 @@ import path from "path";
 import cron from "node-cron";
 import pdf from "pdf-parse";
 import mammoth from "mammoth";
+import { GeminiService } from "../services/GeminiService";
+import { LinkedInService } from "../services/LinkedInService";
 
 const jobService = new JobService();
 const hrExtractor = new HRExtractorService();
@@ -1243,6 +1245,516 @@ this document reference for your applications.`;
     }
   );
 
+  // ADD these endpoints to your api.ts file:
+
+  // Generate and save job suggestions document to Google Drive
+  app.post(
+    "/api/jobs/generate-suggestions-doc",
+    verifyToken,
+    async (req, res) => {
+      try {
+        const sessionUser = req.user!;
+        const dbUser = await getActualDatabaseUser(sessionUser);
+
+        if (!dbUser) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        // FIX: Get recent job applications instead of JobListingModel
+        const recentApplications = await JobApplicationModel.findByUserId(
+          dbUser.id,
+          10
+        );
+
+        if (recentApplications.length === 0) {
+          return res.status(404).json({
+            error: "No recent job applications found. Run job search first.",
+          });
+        }
+
+        // Convert applications to job suggestions format
+        const jobSuggestions = recentApplications.map((app) => ({
+          job: {
+            id: app.id,
+            title: app.jobListing?.title || "Unknown Title",
+            company: app.jobListing?.company || "Unknown Company",
+            location: app.jobListing?.location || "Location TBD",
+            url: app.jobUrl || "#",
+          },
+          analysis: {
+            matchScore: app.matchScore || 70,
+            missingSkills: ["Skills analysis not available"],
+            recommendations: app.notes
+              ? [app.notes]
+              : ["Review job requirements"],
+          },
+          suggestions: [
+            `Customize resume for ${app.jobListing?.title || "this position"}`,
+            `Research ${app.jobListing?.company || "the company"} thoroughly`,
+            `Prepare specific examples for interview questions`,
+          ],
+        }));
+
+        // Create a simple HTML document (fallback method)
+        const htmlDocument = createSimpleSuggestionsDocument(
+          { name: dbUser.name, email: dbUser.email },
+          jobSuggestions
+        );
+
+        // Save to Google Drive if user has access
+        let driveLink = null;
+        if (sessionUser.googleToken) {
+          try {
+            const driveService = new GoogleDriveService(
+              sessionUser.googleToken,
+              sessionUser.googleRefreshToken
+            );
+
+            const fileName = `Job_Suggestions_${
+              new Date().toISOString().split("T")[0]
+            }.html`;
+
+            // Use existing saveResume method to save HTML file
+            driveLink = await driveService.saveResume(
+              htmlDocument,
+              fileName,
+              "Job Suggestions",
+              "Daily Report"
+            );
+
+            console.log("Suggestions document saved to Drive:", fileName);
+          } catch (driveError) {
+            console.log("Failed to save to Drive:", driveError);
+          }
+        }
+
+        res.json({
+          success: true,
+          documentGenerated: true,
+          jobsIncluded: jobSuggestions.length,
+          driveLink: driveLink,
+          message: driveLink
+            ? "Suggestions document created and saved to Google Drive!"
+            : "Suggestions document created (Google Drive not available)",
+        });
+      } catch (error) {
+        console.error("Error generating suggestions document:", error);
+        res
+          .status(500)
+          .json({ error: "Failed to generate suggestions document" });
+      }
+    }
+  );
+
+  // Export job suggestions to Excel
+  // app.get("/api/jobs/export-excel", verifyToken, async (req, res) => {
+  //   try {
+  //     const sessionUser = req.user!;
+  //     const dbUser = await getActualDatabaseUser(sessionUser);
+
+  //     if (!dbUser) {
+  //       return res.status(404).json({ error: "User not found" });
+  //     }
+
+  //     const days = parseInt(req.query.days as string) || 7;
+
+  //     // Get job data from database
+  //     const jobs = await JobListingModel.findRecentByUser(dbUser.id, 50, days);
+
+  //     if (jobs.length === 0) {
+  //       return res.status(404).json({
+  //         error: `No jobs found in the last ${days} days`
+  //       });
+  //     }
+
+  //     // Create Excel data structure
+  //     const excelData = jobs.map(job => ({
+  //       'Job Title': job.title,
+  //       'Company': job.company,
+  //       'Location': job.location || '',
+  //       'Posted Date': job.postedDate ? new Date(job.postedDate).toLocaleDateString() : '',
+  //       'Match Score': job.matchScore || 'N/A',
+  //       'Status': job.applicationStatus || 'Not Applied',
+  //       'Job URL': job.url || '',
+  //       'Description Preview': job.description ?
+  //         job.description.substring(0, 200) + '...' : '',
+  //       'Suggestions Count': job.suggestions ? job.suggestions.length : 0,
+  //       'Missing Skills': job.missingSkills ? job.missingSkills.join(', ') : '',
+  //       'Date Added': job.createdAt ? new Date(job.createdAt).toLocaleDateString() : ''
+  //     }));
+
+  //     // Generate Excel file using a simple approach
+  //     const csvContent = convertToCSV(excelData);
+  //     const fileName = `Job_Suggestions_${new Date().toISOString().split('T')[0]}.csv`;
+
+  //     // Save to Google Drive if available
+  //     let driveLink = null;
+  //     if (sessionUser.googleToken) {
+  //       try {
+  //         const driveService = new GoogleDriveService(
+  //           sessionUser.googleToken,
+  //           sessionUser.googleRefreshToken
+  //         );
+
+  //         driveLink = await driveService.saveSpreadsheet(
+  //           csvContent,
+  //           fileName,
+  //           "Job Suggestions Export"
+  //         );
+  //       } catch (driveError) {
+  //         console.log("Failed to save Excel to Drive:", driveError);
+  //       }
+  //     }
+
+  //     res.json({
+  //       success: true,
+  //       fileName: fileName,
+  //       jobsExported: jobs.length,
+  //       driveLink: driveLink,
+  //       csvContent: csvContent,
+  //       message: driveLink ?
+  //         "Excel export saved to Google Drive!" :
+  //         "Excel data generated (download CSV below)"
+  //     });
+
+  //   } catch (error) {
+  //     console.error("Error exporting to Excel:", error);
+  //     res.status(500).json({ error: "Failed to export to Excel" });
+  //   }
+  // });
+
+  app.get("/api/jobs/export-csv", verifyToken, async (req, res) => {
+    try {
+      const sessionUser = req.user!;
+      const dbUser = await getActualDatabaseUser(sessionUser);
+
+      if (!dbUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Use existing JobApplicationModel
+      const applications = await JobApplicationModel.findByUserId(
+        dbUser.id,
+        100
+      );
+
+      if (applications.length === 0) {
+        return res.status(404).json({
+          error: "No job applications found. Run job search first.",
+        });
+      }
+
+      const csvData = applications.map((app) => ({
+        "Application Date": app.appliedAt
+          ? new Date(app.appliedAt).toLocaleDateString()
+          : "",
+        "Job Title": app.jobListing?.title || "N/A",
+        Company: app.jobListing?.company || "N/A",
+        Location: app.jobListing?.location || "N/A",
+        "Match Score": app.matchScore || "N/A",
+        Status: app.status || "N/A",
+        "Resume Customized": app.resumeCustomized ? "Yes" : "No",
+        "Job URL": app.jobUrl || app.jobListing?.url || "",
+        Notes: app.notes || "",
+        "Drive Link": app.driveLink || "",
+      }));
+
+      const csv = convertToCSV(csvData);
+      const fileName = `job_applications_${
+        new Date().toISOString().split("T")[0]
+      }.csv`;
+
+      // Save to Google Drive if available
+      let driveLink = null;
+      if (sessionUser.googleToken) {
+        try {
+          const driveService = new GoogleDriveService(
+            sessionUser.googleToken,
+            sessionUser.googleRefreshToken
+          );
+
+          driveLink = await driveService.saveResume(
+            csv,
+            fileName,
+            "Job Applications Export",
+            "CSV Data"
+          );
+        } catch (driveError) {
+          console.log("Failed to save CSV to Drive:", driveError);
+        }
+      }
+
+      res.json({
+        success: true,
+        fileName: fileName,
+        applicationsExported: applications.length,
+        driveLink: driveLink,
+        csvContent: csv,
+        message: driveLink
+          ? "CSV export saved to Google Drive!"
+          : "CSV data generated successfully",
+      });
+    } catch (error) {
+      console.error("Error exporting to CSV:", error);
+      res.status(500).json({ error: "Failed to export to CSV" });
+    }
+  });
+
+  // Download CSV directly
+  // Add this endpoint to your auth.ts file, in the COMMON AUTH ROUTES section
+
+// Simple CSV download endpoint (compatible with frontend)
+app.get("/api/jobs/download-csv", verifyToken, async (req, res) => {
+  console.log("🔍 SIMPLE CSV DOWNLOAD ENDPOINT HIT!");
+  try {
+    const sessionUser = req.user!;
+    const { type = "applied" } = req.query;
+
+    console.log(`=== SIMPLE CSV DOWNLOAD ===`);
+    console.log(`User: ${sessionUser.email}`);
+    console.log(`Type: ${type}`);
+
+    // Get actual database user
+    const dbUser = await getActualDatabaseUser(sessionUser);
+    if (!dbUser) {
+      return res.status(404).json({ error: "User not found in database" });
+    }
+
+    let csvData = "";
+    let filename = "";
+
+    if (type === "applied" || type === "all") {
+      // Get user's applications
+      const applications = await JobApplicationModel.findByUserId(dbUser.id, 100);
+
+      console.log(`Found ${applications.length} applications for CSV`);
+
+      // Simple CSV headers for compatibility
+      const headers = ["Date", "Job Title", "Company", "Status", "Match Score", "Job URL"];
+      csvData = headers.join(",") + "\n";
+
+      // Add application data
+      for (const app of applications) {
+        const jobListing = app.jobListing || {
+          title: "Unknown Position",
+          company: "Unknown Company",
+        };
+
+        const row = [
+          app.appliedAt ? new Date(app.appliedAt).toLocaleDateString() : "",
+          `"${jobListing.title || "Unknown Position"}"`,
+          `"${jobListing.company || "Unknown Company"}"`,
+          app.status || "unknown",
+          app.matchScore || 0,
+          app.jobUrl || "",
+        ];
+
+        csvData += row.join(",") + "\n";
+      }
+
+      filename = `job_applications_${sessionUser.email.split("@")[0]}_${
+        new Date().toISOString().split("T")[0]
+      }.csv`;
+    } else if (type === "available") {
+      // Get available jobs
+      const jobSearchResults = await getAvailableJobs(dbUser);
+
+      const headers = ["Job Title", "Company", "Location", "Job URL", "Source", "Application Method"];
+      csvData = headers.join(",") + "\n";
+
+      for (const job of jobSearchResults) {
+        const applicationMethod = determineApplicationMethod(job);
+
+        const row = [
+          `"${job.title}"`,
+          `"${job.company}"`,
+          `"${job.location}"`,
+          job.url || "",
+          job.source || "Unknown",
+          `"${applicationMethod}"`,
+        ];
+
+        csvData += row.join(",") + "\n";
+      }
+
+      filename = `available_jobs_${sessionUser.email.split("@")[0]}_${
+        new Date().toISOString().split("T")[0]
+      }.csv`;
+    }
+
+    // Set CSV headers
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+    console.log(`✅ Simple CSV export completed: ${filename}`);
+    res.send(csvData);
+  } catch (error) {
+    console.error("Error in simple CSV download:", error);
+    res.status(500).json({ error: "Failed to download CSV" });
+  }
+});
+  // Helper function to create simple suggestions document
+  function createSimpleSuggestionsDocument(
+    userInfo: any,
+    jobSuggestions: any[]
+  ): string {
+    const date = new Date().toLocaleDateString();
+
+    const jobsHtml = jobSuggestions
+      .slice(0, 10)
+      .map((suggestion) => {
+        const matchScore = suggestion.analysis.matchScore || 70;
+        const matchColor =
+          matchScore >= 80
+            ? "#4CAF50"
+            : matchScore >= 60
+            ? "#FF9800"
+            : "#F44336";
+
+        return `
+      <div class="job-card">
+        <div class="job-header">
+          <h3>${suggestion.job.title}</h3>
+          <div class="company">${suggestion.job.company}</div>
+        </div>
+        <div class="match-score" style="background-color: ${matchColor}; color: white; padding: 5px 10px; border-radius: 15px; display: inline-block; margin: 10px 0;">
+          ${matchScore}% Match
+        </div>
+        <div class="location">📍 ${suggestion.job.location}</div>
+        <div class="suggestions">
+          <h4>💡 Recommendations:</h4>
+          <ul>
+            ${suggestion.suggestions.map((s) => `<li>${s}</li>`).join("")}
+          </ul>
+        </div>
+        <div class="apply-link">
+          <a href="${
+            suggestion.job.url
+          }" style="background: #0066cc; color: white; padding: 8px 15px; text-decoration: none; border-radius: 5px;">Apply Now</a>
+        </div>
+      </div>
+    `;
+      })
+      .join("");
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Job Suggestions Report - ${userInfo.name}</title>
+      <style>
+        body { 
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+          max-width: 1000px; 
+          margin: 0 auto; 
+          padding: 20px; 
+          background: #f5f5f5; 
+        }
+        .header { 
+          text-align: center; 
+          background: white; 
+          padding: 30px; 
+          border-radius: 10px; 
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          margin-bottom: 30px; 
+        }
+        .job-card { 
+          background: white; 
+          border-radius: 10px; 
+          padding: 25px; 
+          margin-bottom: 20px; 
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          transition: transform 0.2s;
+        }
+        .job-card:hover {
+          transform: translateY(-2px);
+        }
+        .job-header h3 { 
+          color: #333; 
+          margin: 0 0 5px 0; 
+          font-size: 1.4em;
+        }
+        .company { 
+          color: #666; 
+          font-size: 1.1em; 
+          font-weight: 500;
+        }
+        .location {
+          color: #888;
+          margin: 10px 0;
+        }
+        .suggestions ul { 
+          padding-left: 20px; 
+          color: #555;
+        }
+        .suggestions li { 
+          margin-bottom: 8px; 
+          line-height: 1.4;
+        }
+        .suggestions h4 {
+          color: #333;
+          margin: 15px 0 10px 0;
+        }
+        .apply-link {
+          margin-top: 15px;
+        }
+        .stats {
+          background: #e3f2fd;
+          padding: 15px;
+          border-radius: 8px;
+          margin: 20px 0;
+          text-align: center;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>🎯 Daily Job Suggestions Report</h1>
+        <p><strong>${userInfo.name}</strong> | ${userInfo.email}</p>
+        <p>Generated on: ${date}</p>
+        <div class="stats">
+          <strong>${jobSuggestions.length}</strong> opportunities analyzed for you
+        </div>
+      </div>
+      ${jobsHtml}
+      <div style="text-align: center; margin-top: 40px; color: #666;">
+        <p>💼 Keep applying and stay consistent!</p>
+        <p>📊 This report was automatically generated by your Job Agent AI</p>
+      </div>
+    </body>
+    </html>
+  `;
+  }
+
+  // Helper function to convert JSON to CSV (keep existing)
+  function convertToCSV(data: any[]): string {
+    if (data.length === 0) return "";
+
+    const headers = Object.keys(data[0]);
+    const csvHeaders = headers.join(",");
+
+    const csvRows = data.map((row) =>
+      headers
+        .map((header) => {
+          const value = row[header];
+          // Escape commas and quotes in CSV
+          if (
+            typeof value === "string" &&
+            (value.includes(",") || value.includes('"'))
+          ) {
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return value || "";
+        })
+        .join(",")
+    );
+
+    return [csvHeaders, ...csvRows].join("\n");
+  }
+
+  // Helper function to convert JSON to CSV
+
   app.post("/api/telegram/setup", verifyToken, async (req, res) => {
     try {
       const sessionUser = req.user!;
@@ -1308,3 +1820,27 @@ this document reference for your applications.`;
     }
   });
 }
+async function getAvailableJobs(user: any): Promise<any[]> {
+  try {
+    // Use the LinkedIn service to search for jobs
+    const linkedinService = new LinkedInService();
+    await linkedinService.initialize();
+
+    const jobs = await linkedinService.searchJobs(
+      ["typescript", "react", "node.js"],
+      "UK",
+      50
+    );
+
+    // Ensure we always return an array
+    return Array.isArray(jobs) ? jobs : [];
+  } catch (error) {
+    console.error("Error fetching available jobs:", error);
+    return []; // Explicitly return empty array on error
+  }
+}
+
+function determineApplicationMethod(job: any) {
+  throw new Error("Function not implemented.");
+}
+

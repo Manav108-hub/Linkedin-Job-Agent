@@ -12,6 +12,170 @@ export class GeminiService {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
   }
 
+  // ADD these methods to your GeminiService.ts class:
+
+async generateJobSuggestions(
+  resume: string,
+  jobDescription: string,
+  jobTitle: string,
+  company: string
+): Promise<string[]> {
+  try {
+    await this.enforceRateLimit();
+
+    const model = this.genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+    });
+
+    const prompt = `As a career coach, analyze this resume against the job posting and provide specific improvement suggestions.
+
+RESUME:
+${resume}
+
+JOB TITLE: ${jobTitle}
+COMPANY: ${company}
+JOB DESCRIPTION:
+${jobDescription}
+
+Provide 5-10 specific, actionable suggestions to improve this candidate's chances of getting this job. Focus on:
+1. Skills to highlight or learn
+2. Resume wording improvements
+3. Experience to emphasize
+4. Technologies to mention
+5. Certifications or training to consider
+
+Return only a JSON array of suggestion strings. Each suggestion should be specific and actionable.
+Example: ["Add React hooks experience to your projects section", "Mention experience with TypeScript interfaces"]
+
+Return only valid JSON array, no other text.`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    let responseText = response.text();
+
+    // Clean response
+    responseText = responseText
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim();
+
+    const suggestions = JSON.parse(responseText);
+    console.log(`Generated ${suggestions.length} suggestions for ${jobTitle}`);
+    
+    return Array.isArray(suggestions) ? suggestions : [];
+
+  } catch (error) {
+    console.error("Error generating job suggestions:", error);
+    return [
+      "Review the job description carefully and tailor your resume",
+      "Highlight relevant technical skills mentioned in the posting", 
+      "Quantify your achievements with specific metrics",
+      "Research the company and industry trends"
+    ];
+  }
+}
+
+async generateSuggestionsDocument(
+  userInfo: { name: string; email: string },
+  jobSuggestions: any[]
+): Promise<string> {
+  try {
+    await this.enforceRateLimit();
+
+    const model = this.genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+    });
+
+    const prompt = `Create a beautiful, professional job suggestions document in HTML format.
+
+USER: ${userInfo.name} (${userInfo.email})
+DATE: ${new Date().toLocaleDateString()}
+
+JOB SUGGESTIONS DATA:
+${JSON.stringify(jobSuggestions.slice(0, 5), null, 2)}
+
+Create an HTML document with:
+1. Professional styling with CSS
+2. Company logos placeholders
+3. Match scores with color coding (green >80%, yellow >60%, red <60%)
+4. Organized suggestions list for each job
+5. Action items and next steps
+6. Professional formatting with headers, cards, and good typography
+
+Make it look like a premium career consulting report. Use modern CSS with:
+- Cards for each job
+- Progress bars for match scores
+- Icons for different suggestion types
+- Clean, professional layout
+- Print-friendly styling
+
+Return only the complete HTML document with embedded CSS.`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const htmlDocument = response.text().trim();
+
+    console.log("Generated professional suggestions document");
+    return htmlDocument;
+
+  } catch (error) {
+    console.error("Error generating suggestions document:", error);
+    
+    // Fallback HTML template
+    return this.createFallbackSuggestionsDocument(userInfo, jobSuggestions);
+  }
+}
+
+private createFallbackSuggestionsDocument(userInfo: any, jobSuggestions: any[]): string {
+  const date = new Date().toLocaleDateString();
+  
+  const jobsHtml = jobSuggestions.slice(0, 5).map(suggestion => {
+    const matchColor = suggestion.analysis.matchScore >= 80 ? '#4CAF50' : 
+                      suggestion.analysis.matchScore >= 60 ? '#FF9800' : '#F44336';
+    
+    return `
+      <div class="job-card">
+        <h3>${suggestion.job.title} - ${suggestion.job.company}</h3>
+        <div class="match-score" style="background-color: ${matchColor}">
+          ${suggestion.analysis.matchScore}% Match
+        </div>
+        <div class="suggestions">
+          <h4>Recommendations:</h4>
+          <ul>
+            ${suggestion.suggestions.map(s => `<li>${s}</li>`).join('')}
+          </ul>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Job Suggestions Report - ${userInfo.name}</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }
+        .job-card { border: 1px solid #ddd; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+        .match-score { display: inline-block; color: white; padding: 5px 10px; border-radius: 15px; font-weight: bold; }
+        .suggestions ul { padding-left: 20px; }
+        .suggestions li { margin-bottom: 8px; }
+        h3 { color: #333; margin-bottom: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>Daily Job Suggestions Report</h1>
+        <p><strong>${userInfo.name}</strong> | ${userInfo.email}</p>
+        <p>Generated on: ${date}</p>
+      </div>
+      ${jobsHtml}
+    </body>
+    </html>
+  `;
+}
+
   private async enforceRateLimit(): Promise<void> {
     const now = Date.now();
     
