@@ -92,7 +92,7 @@ export default function authRoutes(app: Express) {
     const authParams = new URLSearchParams({
       response_type: "code",
       client_id: process.env.LINKEDIN_CLIENT_ID!,
-      redirect_uri: "http://localhost:3001/api/auth/linkedin/callback",
+      redirect_uri: "http://linkedin-job-agent-production-9672.up.railway.app/api/auth/linkedin/callback",
       scope: "openid profile email", // Fixed scope - LinkedIn v2 API
       state: "linkedin-connect",
     });
@@ -146,7 +146,7 @@ export default function authRoutes(app: Express) {
         code: code.toString(),
         client_id: process.env.LINKEDIN_CLIENT_ID!,
         client_secret: process.env.LINKEDIN_CLIENT_SECRET!,
-        redirect_uri: "http://localhost:3001/api/auth/linkedin/callback",
+        redirect_uri: "http://linkedin-job-agent-production-9672.up.railway.app/api/auth/linkedin/callback",
       });
 
       const tokenResponse = await axios.post(
@@ -828,7 +828,7 @@ export default function authRoutes(app: Express) {
           : "missing",
         hasClientSecret: !!process.env.LINKEDIN_CLIENT_SECRET,
         frontendUrl: process.env.FRONTEND_URL,
-        callbackUrl: "http://localhost:3001/api/auth/linkedin/callback",
+        callbackUrl: "http://linkedin-job-agent-production-9672.up.railway.app/api/auth/linkedin/callback",
         nodeEnv: process.env.NODE_ENV,
         timeout: process.env.LINKEDIN_TIMEOUT,
         retryAttempts: process.env.LINKEDIN_RETRY_ATTEMPTS,
