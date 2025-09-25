@@ -1,4 +1,5 @@
-import { Page } from 'puppeteer';
+// src/services/HrExtractorService.ts - Fixed puppeteer import and types
+import puppeteer, { Page } from 'puppeteer';
 
 export interface HRContact {
   name?: string;

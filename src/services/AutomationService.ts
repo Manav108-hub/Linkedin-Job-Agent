@@ -165,8 +165,11 @@ export class AutomationService {
       console.log(
         `Found ${validUsers.length} valid automation users out of ${users.length} total users`
       );
-      return validUsers.map((user) => ({
+      
+      // FIXED: Proper type casting
+      const mappedUsers: UserSession[] = validUsers.map((user) => ({
         ...user,
+        profileData: user.profileData as any,
         linkedinToken: user.linkedinToken || undefined,
         googleToken: user.googleToken || undefined,
         googleRefreshToken: user.googleRefreshToken || undefined,
@@ -174,6 +177,8 @@ export class AutomationService {
         googleId: user.googleId || undefined,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       }));
+
+      return mappedUsers;
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -186,6 +191,8 @@ export class AutomationService {
   async triggerManualAutomation(userEmail: string): Promise<any> {
     try {
       const dbUsers = await UserModel.findAutomationUsers();
+      
+      // FIXED: Proper type casting
       const users: UserSession[] = dbUsers.map((user) => ({
         ...user,
         profileData: user.profileData as any,
@@ -196,6 +203,7 @@ export class AutomationService {
         googleId: user.googleId || undefined,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       }));
+      
       const user = users.find((u: { email: string }) => u.email === userEmail);
 
       if (!user) {
@@ -204,14 +212,8 @@ export class AutomationService {
         );
       }
 
-      const userSession = {
+      const userSession: UserSession = {
         ...user,
-        linkedinToken: user.linkedinToken || undefined,
-        googleToken: user.googleToken || undefined,
-        googleRefreshToken: user.googleRefreshToken || undefined,
-        linkedinId: user.linkedinId || undefined,
-        googleId: user.googleId || undefined,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         profileData: user.profileData || {
           skills: [],
           experience: undefined,
@@ -227,11 +229,7 @@ export class AutomationService {
       };
 
       console.log(`🎯 Manual automation triggered for: ${userEmail}`);
-      const sessionUser: UserSession = {
-        ...userSession,
-        profileData: userSession.profileData as any,
-      };
-      await this.processUserAutomation(sessionUser);
+      await this.processUserAutomation(userSession);
 
       return { success: true, message: "Manual automation completed" };
     } catch (error: unknown) {
