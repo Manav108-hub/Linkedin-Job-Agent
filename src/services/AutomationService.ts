@@ -166,7 +166,7 @@ export class AutomationService {
         `Found ${validUsers.length} valid automation users out of ${users.length} total users`
       );
       
-      // FIXED: Proper type casting
+      // FIXED: Proper type casting with preferredKeywords
       const mappedUsers: UserSession[] = validUsers.map((user) => ({
         ...user,
         profileData: user.profileData as any,
@@ -175,6 +175,11 @@ export class AutomationService {
         googleRefreshToken: user.googleRefreshToken || undefined,
         linkedinId: user.linkedinId || undefined,
         googleId: user.googleId || undefined,
+        preferredKeywords: Array.isArray(user.preferredKeywords) 
+          ? user.preferredKeywords 
+          : typeof user.preferredKeywords === 'string'
+          ? JSON.parse(user.preferredKeywords)
+          : ['typescript', 'react', 'node.js'],
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       }));
 
@@ -201,6 +206,11 @@ export class AutomationService {
         googleRefreshToken: user.googleRefreshToken || undefined,
         linkedinId: user.linkedinId || undefined,
         googleId: user.googleId || undefined,
+        preferredKeywords: Array.isArray(user.preferredKeywords) 
+          ? user.preferredKeywords 
+          : typeof user.preferredKeywords === 'string'
+          ? JSON.parse(user.preferredKeywords)
+          : ['typescript', 'react', 'node.js'],
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       }));
       
