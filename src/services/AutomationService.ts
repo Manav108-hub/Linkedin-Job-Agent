@@ -185,7 +185,17 @@ export class AutomationService {
   // Manual trigger for testing
   async triggerManualAutomation(userEmail: string): Promise<any> {
     try {
-      const users = await UserModel.findAutomationUsers();
+      const dbUsers = await UserModel.findAutomationUsers();
+      const users: UserSession[] = dbUsers.map((user) => ({
+        ...user,
+        profileData: user.profileData as any,
+        linkedinToken: user.linkedinToken || undefined,
+        googleToken: user.googleToken || undefined,
+        googleRefreshToken: user.googleRefreshToken || undefined,
+        linkedinId: user.linkedinId || undefined,
+        googleId: user.googleId || undefined,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      }));
       const user = users.find((u: { email: string }) => u.email === userEmail);
 
       if (!user) {
@@ -212,12 +222,16 @@ export class AutomationService {
           resume_content: undefined,
           resume_filename: undefined,
           resume_uploaded_at: undefined,
-          resume_size: undefined
-        }
+          resume_size: undefined,
+        },
       };
 
       console.log(`🎯 Manual automation triggered for: ${userEmail}`);
-      await this.processUserAutomation(userSession);
+      const sessionUser: UserSession = {
+        ...userSession,
+        profileData: userSession.profileData as any,
+      };
+      await this.processUserAutomation(sessionUser);
 
       return { success: true, message: "Manual automation completed" };
     } catch (error: unknown) {

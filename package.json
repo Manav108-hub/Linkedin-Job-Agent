@@ -8,10 +8,11 @@
   },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc",
+    "build": "tsc && npx prisma generate",
     "start": "node dist/server.js",
-    "db:init": "ts-node src/database/db.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "postinstall": "npx prisma generate",
+    "db:migrate": "npx prisma migrate deploy",
+    "db:seed": "npx prisma db seed"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +22,7 @@
     "@google/generative-ai": "^0.2.1",
     "@prisma/client": "^6.16.2",
     "@types/multer": "^2.0.0",
+    "@types/puppeteer": "^5.4.7",
     "axios": "^1.12.2",
     "cheerio": "^1.1.2",
     "cors": "^2.8.5",
@@ -58,7 +60,7 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/sqlite3": "^3.1.11",
     "@types/uuid": "^9.0.8",
-    "puppeteer": "^24.22.0",
+    "puppeteer": "^24.22.3",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.2"
   }
