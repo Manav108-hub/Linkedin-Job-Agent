@@ -149,32 +149,39 @@ export class ResumeService {
 
   // Get resume sections for AI customization
   async getUserResumeSections(userId: string): Promise<ResumeSection> {
-    try {
-      const user = await UserModel.findById(userId);
-      
-      if (user && user.resumeSections) {
-        return JSON.parse(user.resumeSections as string);
+  try {
+    const user = await UserModel.findById(userId);
+    
+    // Safe property access with type checking
+    if (user && (user as any).resumeSections) {
+      try {
+        return JSON.parse((user as any).resumeSections as string);
+      } catch (parseError) {
+        console.error('Error parsing resume sections:', parseError);
+        // Fall through to extraction
       }
-      
-      // Fallback: extract sections from full text
-      const resumeText = await this.getUserResumeText(userId);
-      return this.extractResumeSections(resumeText);
-    } catch (error) {
-      console.error('Error getting resume sections:', error);
-      return {};
     }
+    
+    // Fallback: extract sections from full text
+    const resumeText = await this.getUserResumeText(userId);
+    return this.extractResumeSections(resumeText);
+  } catch (error) {
+    console.error('Error getting resume sections:', error);
+    return {};
   }
+}
 
   // Get user's original file buffer (preserves formatting and links)
   async getUserOriginalResume(userId: string): Promise<Buffer | null> {
-    try {
-      const user = await UserModel.findById(userId);
-      return user?.originalFileBuffer || null;
-    } catch (error) {
-      console.error('Error getting original resume:', error);
-      return null;
-    }
+  try {
+    const user = await UserModel.findById(userId);
+    // Safe property access with type assertion
+    return (user as any)?.originalFileBuffer || null;
+  } catch (error) {
+    console.error('Error getting original resume:', error);
+    return null;
   }
+}
 
   // Create customized resume by replacing only specific sections
   createCustomizedResumeWithSections(

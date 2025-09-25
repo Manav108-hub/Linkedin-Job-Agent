@@ -1039,75 +1039,119 @@ export class LinkedInService {
   }
 
   private async fillTextAreaSafely(page: Page, coverLetter: string): Promise<void> {
+  try {
+    // Use $$eval to get all textareas as an array
+    await page.$$eval('textarea', (textAreas: HTMLTextAreaElement[]) => {
+      textAreas.forEach((textArea, index) => {
+        const placeholder = textArea.placeholder?.toLowerCase() || '';
+        
+        if (placeholder.includes('cover') || placeholder.includes('message') || placeholder.includes('why')) {
+          textArea.value = coverLetter;
+          console.log(`✅ Cover letter filled in textarea ${index + 1}`);
+        }
+      });
+    });
+  } catch (error) {
+    console.log('⚠️ Cover letter filling failed:', error);
+    // Fallback: try individual element handling
     try {
-      const textAreas = await page.$('textarea');
-      for (const textArea of textAreas) {
+      const textAreaElements = await page.$$('textarea');
+      for (let i = 0; i < textAreaElements.length; i++) {
+        const textArea = textAreaElements[i];
         const placeholder = await textArea.evaluate(el => el.placeholder?.toLowerCase() || '');
         
         if (placeholder.includes('cover') || placeholder.includes('message') || placeholder.includes('why')) {
-          await textArea.click();
+          await textArea.click({ clickCount: 3 }); // Select all existing text
           await textArea.type(coverLetter, { delay: 30 });
-          console.log('✅ Cover letter filled');
+          console.log('✅ Cover letter filled (fallback method)');
           break;
         }
       }
-    } catch (error) {
-      console.log('⚠️ Cover letter filling failed:', error);
+    } catch (fallbackError) {
+      console.log('⚠️ Fallback cover letter filling also failed');
     }
   }
+}
 
   private async answerCommonQuestions(page: Page, userInfo: any): Promise<void> {
-    const commonAnswers = {
-      'years of experience': userInfo.experience || '2',
-      'willing to relocate': userInfo.relocate || 'Yes',
-      'authorization to work': 'Yes',
-      'notice period': userInfo.noticePeriod || '30 days',
-      'expected salary': userInfo.expectedSalary || 'Competitive',
-      'start date': userInfo.startDate || 'Immediately available'
-    };
+  const commonAnswers = {
+    'years of experience': userInfo.experience || '2',
+    'willing to relocate': userInfo.relocate || 'Yes',
+    'authorization to work': 'Yes',
+    'notice period': userInfo.noticePeriod || '30 days',
+    'expected salary': userInfo.expectedSalary || 'Competitive',
+    'start date': userInfo.startDate || 'Immediately available'
+  };
 
+  try {
+    // Handle text inputs using $$eval
+    await page.$$eval('input[type="text"], input[type="number"]', 
+      (inputs: HTMLInputElement[], commonAnswers: any) => {
+        inputs.forEach(input => {
+          // Find the associated label
+          const labelEl = input.closest('.form-element, .field, .input-group')?.querySelector('label');
+          const labelText = labelEl?.textContent?.toLowerCase() || '';
+          
+          for (const [keyword, answer] of Object.entries(commonAnswers)) {
+            if (labelText.includes(keyword)) {
+              input.value = answer as string;
+              console.log(`✅ Answered: ${keyword} = ${answer}`);
+              break;
+            }
+          }
+        });
+      }, commonAnswers);
+  } catch (error) {
+    console.log('⚠️ Question answering failed with $$eval, trying fallback:', error);
+    
+    // Fallback: manual iteration
     try {
-      // Handle text inputs
-      const inputs = await page.$('input[type="text"], input[type="number"]');
-      
-      for (const input of inputs) {
+      const inputElements = await page.$$('input[type="text"], input[type="number"]');
+      for (let i = 0; i < inputElements.length; i++) {
+        const input = inputElements[i];
         const label = await input.evaluate(el => {
-          const labelEl = el.closest('.form-element, .field')?.querySelector('label');
+          const labelEl = el.closest('.form-element, .field, .input-group')?.querySelector('label');
           return labelEl?.textContent?.toLowerCase() || '';
         });
 
         for (const [keyword, answer] of Object.entries(commonAnswers)) {
           if (label.includes(keyword)) {
-            await input.click();
-            await input.type(answer, { delay: 50 });
+            await input.click({ clickCount: 3 }); // Select all text
+            await input.type(answer as string, { delay: 50 });
             console.log(`✅ Answered: ${keyword} = ${answer}`);
             break;
           }
         }
       }
-
-      // Handle dropdowns
-      const selects = await page.$('select');
-      for (const select of selects) {
-        try {
-          const options = await select.$('option');
-          if (options.length > 1) {
-            // Select first non-empty option
-            const firstValue = await options[1].evaluate(el => (el as HTMLOptionElement).value);
-            if (firstValue) {
-              await select.select(firstValue);
-              console.log('✅ Dropdown selection made');
-            }
-          }
-        } catch (error) {
-          // Continue with other selects
-        }
-      }
-
-    } catch (error) {
-      console.log('⚠️ Question answering failed:', error);
+    } catch (fallbackError) {
+      console.log('⚠️ Fallback question answering also failed');
     }
   }
+
+  // Fix for line 1091 - selects iteration
+  try {
+    const selectElements = await page.$$('select');
+    for (let i = 0; i < selectElements.length; i++) {
+      const select = selectElements[i];
+      try {
+        const options = await select.$$('option');
+        if (options.length > 1) {
+          // Select first non-empty option
+          const firstValue = await options[1].evaluate(el => (el as HTMLOptionElement).value);
+          if (firstValue) {
+            await select.select(firstValue);
+            console.log('✅ Dropdown selection made');
+          }
+        }
+      } catch (error) {
+        // Continue with other selects
+        console.log('⚠️ Failed to handle select dropdown');
+      }
+    }
+  } catch (error) {
+    console.log('⚠️ Select dropdown handling failed');
+  }
+}
 
   private async findAndHighlightSubmitButton(page: Page): Promise<any> {
     try {

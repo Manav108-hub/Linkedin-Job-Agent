@@ -81,16 +81,38 @@ export class JobService {
             progress: Math.round(((i + 1) / Math.min(jobs.length, 10)) * 100),
           });
 
-          // FIX: Safe job description handling
+          // FIX: Safe job description handling with proper type checking
           let jobDescription = "";
           try {
             // Check if job has description property and handle safely
-            if ('description' in job && typeof job.description === 'string') {
+            if (job && typeof job === 'object' && 'description' in job && typeof job.description === 'string') {
               jobDescription = job.description;
             } else if (this.linkedinService.getJobDescription) {
               const descriptionResult = await this.linkedinService.getJobDescription(job.url);
-              jobDescription = typeof descriptionResult === 'string' ? 
-                descriptionResult : (descriptionResult?.description || "");
+              // jobDescription = typeof descriptionResult === 'string' ? 
+              // With proper type checking:
+                let jobDescription = "";
+                try {
+                  // Check if job has description property and handle safely
+                  if (job && typeof job === 'object' && 'description' in job && typeof job.description === 'string') {
+                    jobDescription = job.description;
+                  } else if (this.linkedinService.getJobDescription) {
+                    const descriptionResult = await this.linkedinService.getJobDescription(job.url);
+                    // Proper type checking for descriptionResult
+                    if (typeof descriptionResult === 'string') {
+                      jobDescription = descriptionResult;
+                    } else if (descriptionResult && typeof descriptionResult === 'object' && 'description' in descriptionResult) {
+                      jobDescription = (descriptionResult as any).description || "";
+                    } else {
+                      jobDescription = "";
+                    }
+                  } else {
+                    jobDescription = `Job: ${job.title} at ${job.company}. Location: ${job.location || 'Not specified'}`;
+                  }
+                } catch (descError) {
+                  console.log("Failed to get detailed job description, using basic info");
+                  jobDescription = `Job: ${job.title} at ${job.company}. Location: ${job.location || 'Not specified'}`;
+                }
             } else {
               // Fallback description
               jobDescription = `Job: ${job.title} at ${job.company}. Location: ${job.location || 'Not specified'}`;
