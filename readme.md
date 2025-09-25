@@ -15,7 +15,6 @@ A self-hosted automation agent that searches job listings, applies on behalf of 
 * Telegram notifications: daily summary + error alerts
 * Resume management: upload to Google Drive and attach during applications
 * WebSocket / Socket.IO for live updates
-* Admin endpoints for monitoring & debugging
 
 ---
 
